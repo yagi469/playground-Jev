@@ -1,0 +1,43 @@
+{
+  "core_themes": [
+    "超対称共形場理論（SCFT）と代数的構造",
+    "4次元/2次元対応（Chiral Algebra / Vertex Operator Algebra）",
+    "Dブレーンおよび非摂動論的超弦理論",
+    "トポロジカル場の量子論（TQFT）と位相的位相",
+    "場の量子論の厳密解法およびBPS状態の幾何学"
+  ],
+  "keywords": [
+    "SCFT",
+    "Chiral Algebra",
+    "Vertex Operator Algebra (VOA)",
+    "D-brane",
+    "Supersymmetry (SUSY)",
+    "Topological Field Theory (TQFT)",
+    "Conformal Bootstrap",
+    "Superconformal Index",
+    "BPS Invariants",
+    "AdS/CFT Correspondence",
+    "Gauge/String Duality",
+    "Chern-Simons Theory",
+    "Non-perturbative QFT"
+  ],
+  "preferred_approaches": [
+    "厳密かつ数理物理的な代数解析（頂点作用素代数、無限次元対称性）",
+    "幾何学的アプローチ（超対称サイクルの交差、ブレーン配位、トポロジカルツイスト）",
+    "非摂動的手法（局所化公式、超対称指数、共形ブートストラップ）",
+    "素粒子現象論よりも、場の量子論の数理構造・対称性の普遍的分類を志向する研究アプローチ"
+  ],
+  "target_categories": [
+    "hep-th",
+    "math-ph",
+    "quant-ph"
+  ],
+  "evaluation_criteria_for_jev": "ユーザーはワインバーグ流の厳密なQFT基盤を持ちつつ、特に超対称共形場理論（SCFT）、4d-2d対応（カイラル代数/頂点代数）、Dブレーン幾何、TQFTなどの非摂動論的・代数的数理構造に強い関心を持っています。論文選定では以下の基準で評価してください：\n1. 【大幅加点】4次元以上のSCFTにおける代数構造（Chiral Algebra, VOA）、超対称指数や局所化計算、トポロジカルツイスト、および低次元CFTとの対応関係を扱う論文。\n2. 【加点】Dブレーンの動力学、AdS/CFT対応の厳密な数理的側面、高次対称性（Generalized Symmetries）やTQFT、共形ブートストラップに関する理論研究。\n3. 【条件付き加点（quant-ph領域）】ホログラフィー原理（AdS/CFT）やQFTのエンタングルメント構造、量子情報と重力の数理的対応を扱う論文。\n4. 【減点/除外】加速器実験のデータフィッティング、標準模型の微調整的現象論（Phenomenology）、および単なる数値計算・モデル構築に偏った論文は関心外としてスコアを下げてください。",
+  "source_books": [
+    "Steven Weinberg: The Quantum Theory of Fields (Vol 1, 2, 3) - 場の量子論、対称性の自発的破れ、超対称性",
+    "hep-th/8809005 (Witten or early topological/conformal field theory)",
+    "4d SCFT and 2d chiral algebra (Beem et al. 2013 / Infinite Chiral Symmetry in Four Dimensions)",
+    "橋本幸士先生の『Dブレーン 超弦理論を正しく学ぶための最前線』"
+  ],
+  "source_sample_papers": []
+}

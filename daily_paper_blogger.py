@@ -121,12 +121,32 @@ def fetch_arxiv_papers(max_results: int = 25) -> List[Dict[str, Any]]:
 # ==============================================================================
 # 2. TypeSafe (Jev) による高速多面スクリーニング & ランキング
 # ==============================================================================
+def load_user_interests() -> Dict[str, Any]:
+    """Google Driveの文献等から抽出されたユーザー興味プロファイルをロード"""
+    profile_path = os.path.join(os.path.dirname(__file__), "user_interests.json")
+    if os.path.exists(profile_path):
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ user_interests.json の読み込み失敗: {e}")
+    return {}
+
+
 def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     各論文を Jev (System One) で並列採点し、
-    「量子コンピュータ・量子情報・ホログラフィ」関連で最も価値が高く面白い論文をランキング
+    Google Driveの読書傾向（SCFT, D-brane, AdS/CFT, 量子情報）に合致し、
+    「量子情報・ホログラフィ・数理物理」関連で最も価値が高く面白い論文をランキング
     """
-    print(f"\n⚡ [TypeSafe Jev] {len(papers)} 件の論文を多面スクリーニング中...")
+    user_profile = load_user_interests()
+    user_criteria = user_profile.get("evaluation_criteria_for_jev", "")
+    core_themes = ", ".join(user_profile.get("core_themes", []))
+
+    print(f"\n⚡ [TypeSafe Jev] {len(papers)} 件の論文をユーザー興味プロファイルに基づいて多面スクリーニング中...")
+    if core_themes:
+        print(f"🎯 反映中の興味テーマ: {core_themes[:60]}...")
+
     scored_papers = []
 
     # Jev への質問定義
@@ -139,7 +159,20 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 "量子複雑性、テンソルネットワーク、ブラックホール量子情報など）に明確に関連していますか？"
             )
         ),
-        # 2. 理論的深さ・新規性
+        # 2. ユーザー個人の興味・数理物理関心への合致度 (Google Drive文献プロファイル準拠)
+        "user_interest_match": Score(
+            instructions=(
+                f"ユーザーの興味基準に基づき、この論文がユーザーの研究的関心にどれだけマッチするか評価してください。\n"
+                f"【ユーザー関心基準】: {user_criteria if user_criteria else '超対称共形場理論、AdS/CFT、量子エンタングルメント、数理物理'}"
+            ),
+            criteria=[
+                "全く関心外（単なる素粒子実験フィッティングや無関係な宇宙論モデルなど）",
+                "やや関連（量子情報の一般的応用など）",
+                "強くマッチ（ホログラフィ、テンソルネットワーク、量子多体、場の理論の数理的側面）",
+                "ドンピシャ（超対称場論、SCFT、4d-2d対応、Dブレーン幾何、AdS/CFTの厳密な量子情報対応）",
+            ],
+        ),
+        # 3. 理論的深さ・新規性
         "theoretical_depth": Score(
             instructions="この論文の理論的深さや数学・物理学的な新規性レベルを評価してください",
             criteria=[
@@ -149,7 +182,7 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 "極めて重要な金字塔・パラダイムシフトの可能性を秘める",
             ],
         ),
-        # 3. ブログ読者への面白さ・話題性
+        # 4. ブログ読者への面白さ・話題性
         "blog_appeal": Score(
             instructions=(
                 "物理学や量子技術に関心を持つブログ読者にとって、"
@@ -162,15 +195,16 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 "非常に魅力的・『これはすごい』と直感的に共有・議論したくなる",
             ],
         ),
-        # 4. サブ分野の特定
+        # 5. サブ分野の特定
         "subfield": Choice(
             instructions="この論文が最も強くフォーカスしているサブ分野を分類してください",
             criteria={
                 "quantum_error_correction": "量子誤り訂正符号・フォールトトレラント量子計算 (FTQC)",
                 "holography_quantum_gravity": "ホログラフィ・AdS/CFT・ブラックホール量子情報・アイランド公式",
+                "scft_mathematical_physics": "超対称共形場理論 (SCFT)・カイラル代数・非摂動QFT・数理物理",
                 "quantum_complexity_algorithms": "量子計算複雑性・量子アルゴリズム・量子超越性",
                 "tensor_networks_manybody": "テンソルネットワーク・量子多体系・SYK模型・エンタングルメント相転移",
-                "other_unrelated": "量子情報とは無関係な純粋素粒子現象論・宇宙論など",
+                "other_unrelated": "量子情報や理論物理の数理構造とは無関係な現象論など",
             },
         ),
     }
@@ -188,6 +222,7 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
             )
 
             is_rel = res.nouls["is_quantum_relevant"].noul
+            u_match = res.scores["user_interest_match"].score
             t_depth = res.scores["theoretical_depth"].score
             b_appeal = res.scores["blog_appeal"].score
             s_field = res.choices["subfield"].choice
@@ -195,18 +230,20 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
             # 総合スコア計算
             # 無関係カテゴリはペナルティ
             penalty = 0.2 if s_field == "other_unrelated" else 1.0
-            total_score = ((is_rel * 3.0) + (t_depth * 1.5) + (b_appeal * 2.0)) * penalty
+            # ユーザー興味マッチ度 (u_match) を強く重み付け (2.5)
+            total_score = ((is_rel * 2.5) + (u_match * 2.5) + (t_depth * 1.5) + (b_appeal * 2.0)) * penalty
 
             p["jev_metrics"] = {
-                "is_quantum_relevant": is_rel,
-                "theoretical_depth": t_depth,
-                "blog_appeal": b_appeal,
+                "is_quantum_relevant": round(is_rel, 3),
+                "user_interest_match": round(u_match, 3),
+                "theoretical_depth": round(t_depth, 3),
+                "blog_appeal": round(b_appeal, 3),
                 "subfield": s_field,
                 "total_score": round(total_score, 3),
             }
             scored_papers.append(p)
 
-            print(f"  [{idx+1}/{len(papers)}] {p['arxiv_id']} | 関連度: {is_rel:.1%} | 深度: {t_depth:.1f} | 魅力: {b_appeal:.1f} | 分野: {s_field} | 総合: {total_score:.2f}")
+            print(f"  [{idx+1}/{len(papers)}] {p['arxiv_id']} | 関連度: {is_rel:.1%} | 興味合致: {u_match:.2f}/3 | 深度: {t_depth:.1f} | 魅力: {b_appeal:.1f} | 分野: {s_field} | 総合: {total_score:.2f}")
 
         except Exception as e:
             print(f"  ⚠️ {p['arxiv_id']} のJev評価スキップ: {e}")
@@ -239,10 +276,16 @@ def write_blog_post_with_gemini(paper: Dict[str, Any]) -> str:
     print(f"   タイトル: {paper['title']}")
     print(f"   分野: {m['subfield']} (総合スコア: {m['total_score']})")
 
+    user_profile = load_user_interests()
+    user_perspective = ""
+    if user_profile:
+        themes = ", ".join(user_profile.get("core_themes", []))
+        user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論（ワインバーグ流の厳密性）、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理や非摂動的・対称性的観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
+
     prompt = f"""あなたは数理物理学、量子情報理論、超弦理論（AdS/CFTなど）の最前線をわかりやすく発信する、一流の科学ブロガー兼研究者です。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 あなた自身の独自の切り口・熱量・生々しい所感・直感的なたとえ話を交えた、ワクワクする魅力的なブログ記事を執筆してください。
-
+{user_perspective}
 【取り上げる論文情報】
 - arXiv ID: {paper['arxiv_id']}
 - 論文タイトル: {paper['title']}
@@ -255,6 +298,7 @@ def write_blog_post_with_gemini(paper: Dict[str, Any]) -> str:
 
 【Jev System One による分析評価】
 - 量子情報・物理合致度: {m['is_quantum_relevant'] * 100:.1f}%
+- ユーザー関心合致スコア: {m.get('user_interest_match', 0.0):.2f} / 3.0
 - 理論的深さスコア: {m['theoretical_depth']:.2f} / 3.0
 - ブログ話題性スコア: {m['blog_appeal']:.2f} / 3.0
 - 専門領域: {m['subfield']}
