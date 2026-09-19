@@ -46,8 +46,59 @@ typesafe_client = TypeSafeClient(api_key=typesafe_api_key)
 
 
 # ==============================================================================
-# 1. arXiv API から最新論文を取得
+# 1. arXiv API から論文を取得
 # ==============================================================================
+def _parse_arxiv_xml(xml_text: str) -> List[Dict[str, Any]]:
+    """arXiv API の Atom XML レスポンスを共通パース"""
+    root = ET.fromstring(xml_text)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    papers = []
+
+    for entry in root.findall("atom:entry", ns):
+        title_el = entry.find("atom:title", ns)
+        title = " ".join(title_el.text.split()) if title_el is not None and title_el.text else "Untitled"
+        
+        # arXiv のエラーエントリはスキップ
+        if title.lower() == "error":
+            continue
+
+        summary_el = entry.find("atom:summary", ns)
+        summary = " ".join(summary_el.text.split()) if summary_el is not None and summary_el.text else ""
+
+        id_el = entry.find("atom:id", ns)
+        raw_id_url = id_el.text.strip() if id_el is not None and id_el.text else ""
+        arxiv_id = raw_id_url.split("/abs/")[-1] if "/abs/" in raw_id_url else raw_id_url
+
+        published_el = entry.find("atom:published", ns)
+        published = published_el.text[:10] if published_el is not None and published_el.text else ""
+
+        authors = []
+        for author in entry.findall("atom:author", ns):
+            name_el = author.find("atom:name", ns)
+            if name_el is not None and name_el.text:
+                authors.append(name_el.text.strip())
+
+        categories = []
+        for cat in entry.findall("atom:category", ns):
+            term = cat.attrib.get("term")
+            if term:
+                categories.append(term)
+
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        papers.append({
+            "arxiv_id": arxiv_id,
+            "title": title,
+            "summary": summary,
+            "published": published,
+            "authors": authors[:5],
+            "categories": categories,
+            "pdf_url": pdf_url,
+            "url": f"https://arxiv.org/abs/{arxiv_id}",
+        })
+    return papers
+
+
 def fetch_arxiv_papers(max_results: int = 25) -> List[Dict[str, Any]]:
     """
     hep-th (高エネルギー理論) と quant-ph (量子情報・量子物理) の最新論文を取得
@@ -68,61 +119,36 @@ def fetch_arxiv_papers(max_results: int = 25) -> List[Dict[str, Any]]:
     try:
         response = httpx.get(url, headers=headers, timeout=25.0)
         response.raise_for_status()
+        papers = _parse_arxiv_xml(response.text)
+        print(f"✅ {len(papers)} 件の論文メタデータを取得完了")
+        return papers
     except Exception as e:
         print(f"❌ arXiv API 取得失敗: {e}")
         return []
 
-    root = ET.fromstring(response.text)
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
-    papers = []
 
-    for entry in root.findall("atom:entry", ns):
-        # タイトル (改行や余分な空白を除去)
-        title_el = entry.find("atom:title", ns)
-        title = " ".join(title_el.text.split()) if title_el is not None else "Untitled"
+def fetch_arxiv_papers_by_ids(arxiv_ids: List[str]) -> List[Dict[str, Any]]:
+    """指定された特定の arXiv ID リストから論文メタデータを直接取得"""
+    clean_ids = [aid.strip().replace("arxiv:", "").replace("arXiv:", "") for aid in arxiv_ids if aid.strip()]
+    if not clean_ids:
+        return []
 
-        # アブストラクト
-        summary_el = entry.find("atom:summary", ns)
-        summary = " ".join(summary_el.text.split()) if summary_el is not None else ""
+    print(f"\n📡 [arXiv API] 指定された論文 ID ({', '.join(clean_ids)}) をピンポイント取得中...")
+    url = f"https://export.arxiv.org/api/query?id_list={','.join(clean_ids)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/atom+xml",
+    }
 
-        # arXiv ID と URL
-        id_el = entry.find("atom:id", ns)
-        raw_id_url = id_el.text.strip() if id_el is not None else ""
-        arxiv_id = raw_id_url.split("/abs/")[-1] if "/abs/" in raw_id_url else raw_id_url
-
-        # 公開日
-        published_el = entry.find("atom:published", ns)
-        published = published_el.text[:10] if published_el is not None else ""
-
-        # 著者
-        authors = []
-        for author in entry.findall("atom:author", ns):
-            name_el = author.find("atom:name", ns)
-            if name_el is not None and name_el.text:
-                authors.append(name_el.text.strip())
-
-        # カテゴリ
-        categories = []
-        for cat in entry.findall("atom:category", ns):
-            term = cat.attrib.get("term")
-            if term:
-                categories.append(term)
-
-        # PDF リンク
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-
-        papers.append({
-            "arxiv_id": arxiv_id,
-            "title": title,
-            "summary": summary,
-            "published": published,
-            "authors": authors[:5], # 最大5名
-            "categories": categories,
-            "pdf_url": pdf_url,
-            "url": f"https://arxiv.org/abs/{arxiv_id}",
-        })
-
-    print(f"✅ {len(papers)} 件の論文メタデータを取得完了")
+    try:
+        response = httpx.get(url, headers=headers, timeout=25.0)
+        response.raise_for_status()
+        papers = _parse_arxiv_xml(response.text)
+        print(f"✅ {len(papers)} 件の指定論文メタデータを取得完了")
+        return papers
+    except Exception as e:
+        print(f"❌ arXiv API 指定ID取得失敗: {e}")
+        return []
     return papers
 
 
@@ -695,17 +721,98 @@ def run_daily_pipeline(
     return generated_files
 
 
+# ==============================================================================
+# 特定論文指定パイプライン
+# ==============================================================================
+def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None) -> List[str]:
+    """特定の arXiv ID を指定してピンポイントでブログ記事を執筆・保存するモード"""
+    print("\n" + "=" * 65)
+    print(" 🎯 arXiv × TypeSafe Jev × Gemini 特定論文ブロガー 起動")
+    print(f" 📑 指定論文: {', '.join(arxiv_ids)}")
+    print("=" * 65)
+
+    if output_dir is None:
+        if os.path.exists(DEFAULT_YAGIBRARY_POSTS_DIR):
+            target_dir = DEFAULT_YAGIBRARY_POSTS_DIR
+        else:
+            target_dir = os.path.join(os.path.dirname(__file__), "generated_posts")
+    else:
+        target_dir = output_dir
+
+    papers = fetch_arxiv_papers_by_ids(arxiv_ids)
+    if not papers:
+        print("❌ 指定された論文を取得できませんでした。")
+        return []
+
+    # Jev で評価・スコアリング（診断レポート作成用）
+    ranked_papers = screen_and_rank_papers_with_jev(papers)
+
+    os.makedirs(target_dir, exist_ok=True)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    generated_files = []
+
+    for i, paper in enumerate(ranked_papers):
+        batch_idx = i + 1
+        print("\n" + "-" * 65)
+        print(f" 🖋️ [記事執筆・整形 {batch_idx}/{len(ranked_papers)}] 対象論文: {paper['arxiv_id']}")
+        print(f"    タイトル: {paper['title']}")
+        print("-" * 65)
+
+        raw_markdown = write_blog_post_with_gemini(paper, rank=batch_idx)
+        quality = verify_post_with_jev(raw_markdown)
+
+        time_offset = (len(ranked_papers) - batch_idx) * 60
+        final_post = format_post_for_yagibrary(
+            raw_markdown,
+            paper,
+            quality,
+            rank=batch_idx,
+            time_offset_seconds=time_offset
+        )
+
+        clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
+        filename = f"{today_str}-arxiv-{clean_id}.md"
+        file_path = os.path.join(target_dir, filename)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(final_post)
+
+        generated_files.append(file_path)
+        print(f" ✅ [指定論文] 記事保存完了: {file_path}")
+
+    print("\n" + "=" * 65)
+    print(f" 🎉 全 {len(generated_files)} 件のブログ記事の生成が完了しました！")
+    for idx, fp in enumerate(generated_files):
+        print(f"   [{idx+1}] {fp}")
+    print("=" * 65)
+    return generated_files
+
+
 if __name__ == "__main__":
-    count = 10
-    top_n = 3
-    if len(sys.argv) > 1:
+    import argparse
+    parser = argparse.ArgumentParser(description="arXiv × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
+    parser.add_argument("--arxiv-id", "-a", type=str, default="", help="特定の arXiv 論文番号（カンマ区切りで複数可。例: 2006.13892）")
+    parser.add_argument("--max-papers", "-m", type=int, default=15, help="arXivから自動取得する件数 (デフォルト: 15)")
+    parser.add_argument("--top-n", "-n", type=int, default=3, help="ブログ記事化する上位件数 (デフォルト: 3)")
+    parser.add_argument("--output-dir", "-o", type=str, default=None, help="記事保存先ディレクトリ")
+    parser.add_argument("positional_args", nargs="*", help="後方互換用: [max_papers] [top_n]")
+
+    args = parser.parse_args()
+
+    # 位置引数があれば上書き (python script.py 10 3 など)
+    if args.positional_args:
         try:
-            count = int(sys.argv[1])
+            args.max_papers = int(args.positional_args[0])
+            if len(args.positional_args) > 1:
+                args.top_n = int(args.positional_args[1])
         except ValueError:
             pass
-    if len(sys.argv) > 2:
-        try:
-            top_n = int(sys.argv[2])
-        except ValueError:
-            pass
-    run_daily_pipeline(max_papers=count, top_n_to_blog=top_n)
+
+    if args.arxiv_id.strip():
+        # 特定論文指定モード
+        target_ids = [aid.strip() for aid in args.arxiv_id.split(",") if aid.strip()]
+        run_targeted_pipeline(arxiv_ids=target_ids, output_dir=args.output_dir)
+    else:
+        # 自動スクリーニングモード
+        run_daily_pipeline(max_papers=args.max_papers, top_n_to_blog=args.top_n, output_dir=args.output_dir)
+

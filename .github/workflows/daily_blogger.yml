@@ -6,13 +6,18 @@ on:
     - cron: '0 23 * * *'
   workflow_dispatch:
     inputs:
+      arxiv_id:
+        description: '指定するarXiv論文番号 (例: 2006.13892)。空欄なら自動スクリーニング'
+        required: false
+        default: ''
+        type: string
       max_papers:
-        description: '取得するarXiv論文の件数 (例: 15)'
+        description: '取得するarXiv論文の件数 (自動スクリーニング時)'
         required: false
         default: '15'
         type: string
       top_n_to_blog:
-        description: 'ブログ記事化する上位件数 (例: 3)'
+        description: 'ブログ記事化する上位件数 (自動スクリーニング時)'
         required: false
         default: '3'
         type: string
@@ -52,10 +57,16 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YAGIBRARY_POSTS_DIR: ${{ github.workspace }}/yagibrary/src/content/posts
         run: |
-          MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
-          TOP_N="${{ github.event.inputs.top_n_to_blog || '3' }}"
-          echo "🚀 Running blogger pipeline (max_papers=$MAX_PAPERS, top_n=$TOP_N)..."
-          python daily_paper_blogger.py "$MAX_PAPERS" "$TOP_N"
+          ARXIV_ID="${{ github.event.inputs.arxiv_id }}"
+          if [ -n "$ARXIV_ID" ]; then
+            echo "🎯 Targeted paper mode: arXiv ID = $ARXIV_ID"
+            python daily_paper_blogger.py --arxiv-id "$ARXIV_ID"
+          else
+            MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
+            TOP_N="${{ github.event.inputs.top_n_to_blog || '3' }}"
+            echo "🚀 Auto-screening mode (max_papers=$MAX_PAPERS, top_n=$TOP_N)..."
+            python daily_paper_blogger.py --max-papers "$MAX_PAPERS" --top-n "$TOP_N"
+          fi
 
       - name: Commit and push changes to yagibrary
         working-directory: yagibrary
