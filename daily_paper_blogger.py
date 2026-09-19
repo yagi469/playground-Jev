@@ -117,17 +117,18 @@ def _parse_arxiv_xml(xml_text: str) -> List[Dict[str, Any]]:
     return papers
 
 
-def fetch_arxiv_papers(max_results: int = 30) -> List[Dict[str, Any]]:
+def fetch_arxiv_papers(max_results: int = 50) -> List[Dict[str, Any]]:
     """
     hep-th (高エネルギー理論) と math-ph (数理物理) を最重要母集団とし、
-    quant-ph も含めてバランスよく最新論文を取得（特定カテゴリの過密を防止）
+    quant-ph も含めてバランスよく最新論文を取得。
+    hep-th は毎日数十件の新規投稿があるため、母集団を十分に確保して取りこぼしを防止。
     """
     print("\n📡 [arXiv API] hep-th (最重要) & math-ph & quant-ph から最新論文を取得中...")
 
-    # カテゴリごとに分散取得して、quant-ph による圧迫を防止
-    hep_count = max(15, int(max_results * 0.6))
-    math_count = max(8, int(max_results * 0.25))
-    quant_count = max(7, int(max_results * 0.25))
+    # hep-th の日次新規投稿（約40〜50件）をほぼ網羅できるように重点配分
+    hep_count = max(40, int(max_results * 0.70))
+    math_count = max(15, int(max_results * 0.25))
+    quant_count = max(15, int(max_results * 0.25))
 
     queries = [
         ("cat:hep-th", hep_count, "hep-th (高エネルギー理論)"),
@@ -1079,7 +1080,7 @@ def format_post_for_yagibrary(
 # メイン実行関数
 # ==============================================================================
 def run_daily_pipeline(
-    max_papers: int = 15,
+    max_papers: int = 50,
     top_n_to_blog: int = 3,
     output_dir: Optional[str] = None
 ) -> List[str]:
@@ -1912,7 +1913,7 @@ if __name__ == "__main__":
     parser.add_argument("--file", "-f", type=str, default="", help="ローカルのPDFまたはMarkdownファイルパス（例: docs/quantum_field_theory.pdf）")
     parser.add_argument("--pages", "-p", type=str, default="", help="PDFの対象ページ範囲（例: 15-30, 45）")
     parser.add_argument("--chapter", "-c", type=str, default="", help="フォーカスしたい章やテーマ（例: 'Chapter 3: Supersymmetry'）")
-    parser.add_argument("--max-papers", "-m", type=int, default=15, help="arXivから自動取得する件数 (デフォルト: 15)")
+    parser.add_argument("--max-papers", "-m", type=int, default=50, help="arXivから自動取得する件数 (デフォルト: 50)")
     parser.add_argument("--top-n", "-n", type=int, default=3, help="ブログ記事化する上位件数 (デフォルト: 3)")
     parser.add_argument("--output-dir", "-o", type=str, default=None, help="記事保存先ディレクトリ")
     parser.add_argument("positional_args", nargs="*", help="後方互換用: [max_papers] [top_n]")

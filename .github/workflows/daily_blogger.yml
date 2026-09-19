@@ -29,7 +29,7 @@ on:
       max_papers:
         description: '取得するarXiv論文の件数 (自動スクリーニング時)'
         required: false
-        default: '15'
+        default: '50'
         type: string
       top_n_to_blog:
         description: 'ブログ記事化する上位件数 (自動スクリーニング時)'
@@ -92,7 +92,7 @@ jobs:
             echo "🎯 Targeted paper mode: arXiv ID = $ARXIV_ID"
             python daily_paper_blogger.py --arxiv-id "$ARXIV_ID"
           else
-            MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
+            MAX_PAPERS="${{ github.event.inputs.max_papers || '50' }}"
             TOP_N="${{ github.event.inputs.top_n_to_blog || '3' }}"
             echo "🚀 Auto-screening mode (max_papers=$MAX_PAPERS, top_n=$TOP_N)..."
             python daily_paper_blogger.py --max-papers "$MAX_PAPERS" --top-n "$TOP_N"
