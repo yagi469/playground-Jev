@@ -329,11 +329,11 @@ tags:
    - 本文の開始部分に「# タイトル」を置かないでください（フロントマターのtitleがWebサイト側で自動描画されるため）。
    - 本文の見出しは「## （見出し名）」から始めてください。
    - 以下の構成で執筆してください：
-     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の興味を一気に引き込む導入。
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の興味を一気に引き込む導入。冒頭で対象論文へのリンク（[{paper['arxiv_id']}]({paper['url']})）およびタイトル・著者情報を必ず明記してください。
      - ## 背景にある物理の壁: 専門知識がない人でもイメージできるように、身近な日常の比喩や直感的な概念を用いて背景を説明。
      - ## この論文の核心アイデア: 数式を丸写しするのではなく「幾何学的な直感」や「量子回路的な直感」に翻訳して解説。
      - ## で、私（筆者）はどう考えるか？: （最重要）「正直ここが面白い」「一方で、この仮定は成り立つのか？」など、筆者自身の率直なオピニオン・ツッコミを展開。
-     - ## まとめ ＆ 論文リンク: 記事の総括と、arXivへのリンク、PDFリンク。
+     - ## まとめ ＆ 論文リンク: 記事の総括と、arXivアブストラクトへのリンク（[{paper['arxiv_id']}]({paper['url']})）、PDFへのリンク（[PDF]({paper['pdf_url']})）を分かりやすくリスト形式で設置してください。
 
 Markdown形式で出力してください。
 """
@@ -487,7 +487,7 @@ def format_post_for_yagibrary(
 ---
 
 ### 📊 本日の自律型 AI パイプライン採点レポート
-- <strong>選定元</strong>: arXiv ({paper['arxiv_id']}) / カテゴリ: {', '.join(paper['categories'])}
+- <strong>選定元</strong>: [<a href="{paper['url']}" target="_blank" rel="noopener noreferrer">arXiv:{paper['arxiv_id']}</a>] / カテゴリ: {', '.join(paper['categories'])}
 - <strong>Jev スクリーニングスコア</strong>:
   - 量子情報・物理合致度: <code>{paper['jev_metrics']['is_quantum_relevant']*100:.1f}%</code>
   - 理論的新規性・深度: <code>{paper['jev_metrics']['theoretical_depth']:.2f} / 3.0</code>
