@@ -79,14 +79,14 @@ jobs:
 
           if [ -n "$FILE_PATH" ]; then
             echo "📖 Document mode: File = $FILE_PATH, Pages = $PAGES, Chapter = $CHAPTER"
-            CMD="python daily_paper_blogger.py --file \"$FILE_PATH\""
+            CMD_ARGS=(--file "$FILE_PATH")
             if [ -n "$PAGES" ]; then
-              CMD="$CMD --pages \"$PAGES\""
+              CMD_ARGS+=(--pages "$PAGES")
             fi
             if [ -n "$CHAPTER" ]; then
-              CMD="$CMD --chapter \"$CHAPTER\""
+              CMD_ARGS+=(--chapter "$CHAPTER")
             fi
-            eval $CMD
+            python daily_paper_blogger.py "${CMD_ARGS[@]}"
           elif [ -n "$ARXIV_ID" ]; then
             echo "🎯 Targeted paper mode: arXiv ID = $ARXIV_ID"
             python daily_paper_blogger.py --arxiv-id "$ARXIV_ID"
