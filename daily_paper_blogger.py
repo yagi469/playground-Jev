@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import httpx
+from bs4 import BeautifulSoup
 import yaml
 from dotenv import load_dotenv
 from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
@@ -182,6 +183,89 @@ def fetch_arxiv_papers_by_ids(arxiv_ids: List[str]) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"❌ arXiv API 指定ID取得失敗: {e}")
         return []
+
+
+def fetch_arxiv_paper_content(arxiv_id: str) -> Optional[Dict[str, Any]]:
+    """
+    arXiv公式HTMLまたはar5ivから論文本文を取得し、
+    主要セクション（Introduction、Theorems/Results、Conclusion）を抽出する。
+    """
+    clean_id = re.sub(r"^arxiv:\s*", "", arxiv_id, flags=re.IGNORECASE).strip()
+    base_id = re.sub(r"v\d+$", "", clean_id)
+
+    print(f"\n📖 [arXiv HTML/ar5iv] 論文本文を取得・解析中: arXiv:{clean_id}...")
+
+    urls = [
+        f"https://arxiv.org/html/{clean_id}",
+        f"https://ar5iv.labs.arxiv.org/html/{clean_id}",
+        f"https://arxiv.org/html/{base_id}",
+        f"https://ar5iv.labs.arxiv.org/html/{base_id}",
+    ]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    html_text = None
+    success_url = None
+    for url in urls:
+        try:
+            resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=15.0)
+            if resp.status_code == 200 and ("ltx_document" in resp.text or "ltx_section" in resp.text or "article" in resp.text):
+                html_text = resp.text
+                success_url = url
+                break
+        except Exception:
+            continue
+
+    if not html_text:
+        print("  ⚠️ arXiv HTML本文の取得をスキップ（利用不可または未変換）")
+        return None
+
+    print(f"  ✓ 論文HTML取得成功: {success_url}")
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # セクションの抽出
+    sections = soup.find_all(["section", "div"], class_=re.compile(r"ltx_section|ltx_appendix|section"))
+    
+    intro_texts = []
+    results_texts = []
+    conclusion_texts = []
+    section_titles = []
+
+    for sec in sections:
+        header = sec.find(["h2", "h3", "h4", "span"], class_=re.compile(r"ltx_title"))
+        title = header.get_text(strip=True) if header else ""
+        if title:
+            section_titles.append(title)
+        
+        lower_t = title.lower()
+        text = sec.get_text(separator=" ", strip=True)
+        if len(text) > 4000:
+            text = text[:4000] + "..."
+
+        if any(k in lower_t for k in ["intro", "background", "motivation"]):
+            intro_texts.append(f"### {title}\n{text}")
+        elif any(k in lower_t for k in ["conclus", "discuss", "outlook", "summary"]):
+            conclusion_texts.append(f"### {title}\n{text}")
+        elif any(k in lower_t for k in ["main", "theorem", "result", "model", "construction", "algebra", "geometric", "duality", "index"]):
+            results_texts.append(f"### {title}\n{text}")
+
+    if not results_texts and len(sections) > 1:
+        for sec in sections[1:4]:
+            t = sec.get_text(separator=" ", strip=True)
+            if t:
+                results_texts.append(t[:3000])
+
+    print(f"  ✓ 論文本文抽出完了: セクション数 {len(section_titles)}, 本文抜粋 約{sum(len(x) for x in intro_texts + results_texts + conclusion_texts)} 文字")
+
+    return {
+        "section_names": ", ".join(section_titles[:10]),
+        "intro": "\n\n".join(intro_texts)[:3500],
+        "main_results": "\n\n".join(results_texts)[:5000],
+        "conclusion": "\n\n".join(conclusion_texts)[:2000],
+    }
 
 
 # ==============================================================================
@@ -355,6 +439,20 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
         themes = ", ".join(user_profile.get("core_themes", []))
         user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論（ワインバーグ流の厳密性）、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理や非摂動的・対称性的観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
 
+    full_text_section = ""
+    fc = paper.get("full_text_content")
+    if fc:
+        full_text_section = f"""
+【論文本文（HTML）からの重要抜粋】
+- 論文のセクション構成: {fc.get('section_names', 'N/A')}
+- 序論・動機（Introduction）:
+{fc.get('intro', '')[:2500]}
+- 核心となる定理・モデル・計算（Main Results / Setup）:
+{fc.get('main_results', '')[:3500]}
+- 結論・展望（Conclusion / Outlook）:
+{fc.get('conclusion', '')[:1500]}
+"""
+
     prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
@@ -368,7 +466,7 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
 - PDFリンク: {paper['pdf_url']}
 - アブストラクト (英文):
 {paper['summary']}
-
+{full_text_section}
 【Jev System One による分析評価】
 - 数理物理核心度: {m.get('is_math_physics_core', m.get('is_quantum_relevant', 0.0)) * 100:.1f}%
 - ユーザー関心合致スコア: {m.get('user_interest_match', 0.0):.2f} / 3.0
@@ -405,6 +503,10 @@ tags:
      $$
      数式
      $$
+
+5. **理論対応・数理構造の Mermaid ダイアグラム化（必須）**:
+   - 記事の理解を劇的に深めるため、論文内の主要概念の対応関係（例: 4d SCFT ➡️ 2d VOA、AdS境界量 ➡️ バルク幾何、S双対性マップ、理論の分類フローなど）を視覚化する Mermaid 図（```mermaid ... ```）を必ず1点以上、適切な箇所（「## この論文の核心アイデアと数理的機構」等）に挿入してください。
+   - 構文エラーを防ぐため、ノード名に括弧 `(...)` や特殊記号を含む場合は必ず二重引用符 `["..."]` で囲んでください（例: `A["4d N=2 SCFT"] --> B["2d Chiral Algebra (VOA)"]`）。
 
 Markdown形式で出力してください。
 """
@@ -484,17 +586,26 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
                 "圧倒的（理論物理の真の美しさとスリルが伝わり、読者を強く引き込む名論考）",
             ],
         ),
-        # 4. 最大の改善ボトルネック診断
+        # 4. Mermaid ダイアグラムの有無と効果
+        "mermaid_visualization": Choice(
+            instructions="記事内に理論の対応関係や数理構造を視覚化する Mermaid ダイアグラム（```mermaid ... ```）が効果的に配置されていますか？",
+            criteria={
+                "present_and_effective": "Mermaid ダイアグラムが適切に配置され、理論の対応関係や概念構造の理解を大いに助けている",
+                "missing_or_ineffective": "Mermaid ダイアグラムが存在しない、あるいは図が単純すぎて有益でない",
+            },
+        ),
+        # 5. 最大の改善ボトルネック診断
         "critique_diagnosis": Choice(
             instructions="この記事のクオリティをさらに高めるために、最も改善が必要なボトルネックはどこですか？",
             criteria={
                 "need_math_details": "核心アイデアの数理的機構や代数・幾何のロジックが抽象的。具体的な作用素・不変量・計算機構の解説が必要",
+                "need_mermaid_map": "理論の対応関係や双対性を俯瞰する Mermaid ダイアグラム（```mermaid ... ```）が不足している",
                 "need_sharp_opinion": "筆者オピニオンが論文の無難なまとめ。独自の問い・批判的考察・数理的意義をもっと熱く語るべき",
                 "avoid_shallow_metaphors": "安易な日常のたとえ話やAI特有のお茶濁しが目立つ。理論物理の真の美しさに徹するべき",
-                "high_quality": "数理の具体性、オピニオンの深さ、知的好奇心刺激度が極めて高い水準で調和している",
+                "high_quality": "数理の具体性、オピニオンの深さ、視覚的ダイアグラム、知的好奇心刺激度が極めて高い水準で調和している",
             },
         ),
-        # 5. 「で、あなたの意見は？」肩透かしリスク
+        # 6. 「で、あなたの意見は？」肩透かしリスク
         "lack_of_opinion_risk": Noul(
             instructions="読者が読み終わった後に「事実は分かったけど、結局筆者はどう思っているの？」と肩透かしを感じるリスクがありますか？"
         ),
@@ -505,18 +616,30 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         math_depth = res.scores["mathematical_depth"].score
         stance = res.scores["author_stance"].score
         appeal = res.scores["intellectual_appeal"].score
+        mermaid_choice = res.choices["mermaid_visualization"].choice
         diagnosis = res.choices["critique_diagnosis"].choice
         risk = res.nouls["lack_of_opinion_risk"].noul
 
+        has_mermaid_syntax = bool(re.search(r"```mermaid[\s\S]+?```", post_content))
+        has_mermaid = has_mermaid_syntax and (mermaid_choice == "present_and_effective")
+
         total_score = math_depth + stance + appeal  # 最大 9.0
 
-        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満
-        passed = (total_score >= 7.0) and (math_depth >= 2.0) and (stance >= 2.0) and (appeal >= 2.0) and (risk < 0.35)
+        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満、かつ Mermaid図あり
+        passed = (
+            (total_score >= 7.0)
+            and (math_depth >= 2.0)
+            and (stance >= 2.0)
+            and (appeal >= 2.0)
+            and (risk < 0.35)
+            and has_mermaid
+        )
 
         print(f"  📊 [Round {round_num} 診断結果]")
         print(f"     ・数理の具体性: {math_depth:.2f} / 3.0")
         print(f"     ・筆者スタンス: {stance:.2f} / 3.0")
         print(f"     ・知的好奇心度: {appeal:.2f} / 3.0")
+        print(f"     ・Mermaid図: {'✅ あり (効果的)' if has_mermaid else '⚠️ なし/不十分'}")
         print(f"     ・総合品質点数: {total_score:.2f} / 9.0 (判定: {'✅ 合格' if passed else '⚠️ 足切り・改善要'})")
         print(f"     ・診断ボトルネック: {diagnosis}")
         print(f"     ・肩透かしリスク: {risk:.1%}")
@@ -526,6 +649,7 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
             "math_depth": math_depth,
             "stance": stance,
             "appeal": appeal,
+            "has_mermaid": has_mermaid,
             "total_score": round(total_score, 2),
             "diagnosis": diagnosis,
             "lack_of_opinion_risk": risk,
@@ -533,11 +657,13 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         }
     except Exception as e:
         print(f"⚠️ Jev 検証エラー: {e}")
+        has_mermaid_syntax = bool(re.search(r"```mermaid[\s\S]+?```", post_content))
         return {
             "round": round_num,
             "math_depth": 2.0,
             "stance": 2.0,
             "appeal": 2.0,
+            "has_mermaid": has_mermaid_syntax,
             "total_score": 6.0,
             "diagnosis": "high_quality",
             "lack_of_opinion_risk": 0.2,
@@ -572,6 +698,13 @@ def rewrite_blog_post_with_gemini(
             "分配関数や指数の厳密計算、幾何学的配位など）が、専門用語の単なる羅列ではなく論理的にどう機能しているのかを明快に解説してください。"
         )
     
+    if not feedback_metrics.get("has_mermaid", True) or diagnosis == "need_mermaid_map":
+        focus_instructions.append(
+            "- 【最重要：Mermaid ダイアグラムの追加】記事内に理論の対応関係（4d SCFT ➡️ 2d VOA など）や"
+            "双対性マップ、真空の分岐図などを表現する Mermaid 図（```mermaid ... ```）を必ず1点以上配置してください。"
+            "ノード名に括弧や特殊文字がある場合は構文エラー防止のため必ず二重引用符 [\"...\"] で囲んでください。"
+        )
+
     if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
         focus_instructions.append(
             "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションが弱いです。"
@@ -592,6 +725,21 @@ def rewrite_blog_post_with_gemini(
 
     focus_text = "\n".join(focus_instructions)
 
+    # 論文本文（HTML）の要所抜粋があればプロンプトに注入
+    full_text_section = ""
+    fc = paper.get("full_text_content")
+    if fc:
+        full_text_section = f"""
+【論文本文（HTML）からの重要抜粋】
+- 論文のセクション構成: {fc.get('section_names', 'N/A')}
+- 序論・動機（Introduction）:
+{fc.get('intro', '')[:2500]}
+- 核心となる定理・モデル・計算（Main Results / Setup）:
+{fc.get('main_results', '')[:3500]}
+- 結論・展望（Conclusion / Outlook）:
+{fc.get('conclusion', '')[:1500]}
+"""
+
     rewrite_prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 
 先ほどあなたが執筆したブログ記事ドラフトに対し、レビュアー（Jev System One 診断システム）から以下の【辛口な品質診断スコアと改善要求】が届きました。
@@ -600,6 +748,7 @@ def rewrite_blog_post_with_gemini(
 - 数理・理論の具体性スコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
 - 筆者オピニオン度スコア: {feedback_metrics.get('stance', 0.0):.2f} / 3.0
 - 知的好奇心刺激度スコア: {feedback_metrics.get('appeal', 0.0):.2f} / 3.0
+- Mermaid図の有無: {'あり' if feedback_metrics.get('has_mermaid') else 'なし (要追加)'}
 - 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0 （基準未達・改善要）
 - 指摘されたボトルネック: {diagnosis}
 - 「あなたの意見は？」肩透かしリスク: {feedback_metrics.get('lack_of_opinion_risk', 0.0)*100:.1f}%
@@ -614,7 +763,7 @@ def rewrite_blog_post_with_gemini(
 - 著者: {', '.join(paper['authors'])}
 - アブストラクト:
 {paper['summary']}
-
+{full_text_section}
 ---
 【前回のドラフト（第{revision_round - 1}稿）】
 {previous_draft}
@@ -624,6 +773,8 @@ def rewrite_blog_post_with_gemini(
 1. 前回のドラフトの構成（フロントマター、## 導入、## 背景にある物理・数学の壁、## この論文の核心アイデアと数理的機構、## で、私（筆者）はどう考えるか？、## まとめ ＆ 論文リンク）を維持したまま、上記改善指令を完全に反映して全面的にブラッシュアップしてください。
 2. 太字強調は必ず HTML の <strong> タグ（例: <strong>太字</strong>）を使用し、Markdownの ** は一切使用しないでください。
 3. 本文先頭に「# タイトル」は置かず、フロントマターから始めてください。
+4. 数式ブロックは必ず独立した行（$$\\n数式\\n$$）で出力してください。
+5. 数理構造や理論の全体像を視覚化する Mermaid ダイアグラム（```mermaid ... ```）を必ず1点以上配置してください（ノード名は [\"...\"] でクォート）。
 
 知的好奇心と数理的深みに満ちた、決定版となる修正後Markdown記事を出力してください。
 """
@@ -865,6 +1016,7 @@ def format_post_for_yagibrary(
   - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
   - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
   - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
+  - Mermaid 概念マップ: <code>{'✅ 配置済 (効果的)' if quality.get('has_mermaid') else '⚠️ 未配置'}</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
   - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
@@ -966,6 +1118,9 @@ def run_daily_pipeline(
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
+        # 2.5. 論文本文（HTML/ar5iv）の重要セクション抽出
+        paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+
         # 3. Gemini × Jev 自律推敲・リライトループ（Evaluator-Optimizer パターン）
         raw_markdown, quality, history = generate_refined_blog_post(
             paper=paper,
@@ -1040,6 +1195,9 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
         print(f" 🖋️ [記事執筆・整形 {batch_idx}/{len(ranked_papers)}] 対象論文: {paper['arxiv_id']}")
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
+
+        # 論文本文（HTML/ar5iv）の重要セクション抽出
+        paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
 
         # Gemini × Jev 自律推敲・リライトループ
         raw_markdown, quality, history = generate_refined_blog_post(
