@@ -1213,18 +1213,38 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
 # ローカルファイル（PDF / Markdown）処理パイプライン
 # ==============================================================================
 def resolve_document_path(file_path: str) -> str:
-    """ローカルファイルパスを解決する（カレント、yagibrary、docs等を自動探索）"""
+    """ローカルファイルパスを解決する（OS間の区切り文字の違い、カレント、yagibrary、docs等を自動探索）"""
+    # Windows のバックスラッシュをスラッシュに正規化
+    normalized = file_path.replace("\\", "/").strip()
+    clean_rel = re.sub(r"^(?:docs/|yagibrary/docs/|yagibrary/)", "", normalized)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        os.path.abspath(file_path),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), file_path)),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../yagibrary", file_path)),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../yagibrary/docs", file_path)),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "docs", file_path)),
+        # 1. そのままのパス（絶対パスまたはカレント基準）
+        os.path.abspath(normalized),
+        os.path.join(script_dir, normalized),
+        # 2. GitHub Actions環境 (カレント配下に yagibrary がチェックアウトされる)
+        os.path.join(script_dir, "yagibrary", normalized),
+        os.path.join(script_dir, "yagibrary/docs", clean_rel),
+        # 3. ローカル開発環境 (playground-Jev と yagibrary が同階層に配置)
+        os.path.abspath(os.path.join(script_dir, "../yagibrary", normalized)),
+        os.path.abspath(os.path.join(script_dir, "../yagibrary/docs", clean_rel)),
+        os.path.abspath(os.path.join(script_dir, "docs", clean_rel)),
     ]
+
+    seen = set()
+    unique_candidates = []
     for c in candidates:
+        norm_c = os.path.normpath(c)
+        if norm_c not in seen:
+            seen.add(norm_c)
+            unique_candidates.append(norm_c)
+
+    for c in unique_candidates:
         if os.path.exists(c) and os.path.isfile(c):
             return c
-    raise FileNotFoundError(f"指定されたファイルが見つかりませんでした: '{file_path}'. 探索候補: {candidates}")
+
+    raise FileNotFoundError(f"指定されたファイルが見つかりませんでした: '{file_path}'. 探索候補: {unique_candidates}")
 
 
 def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> Tuple[bytes, str]:

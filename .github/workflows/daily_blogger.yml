@@ -72,7 +72,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YAGIBRARY_POSTS_DIR: ${{ github.workspace }}/yagibrary/src/content/posts
         run: |
-          FILE_PATH="${{ github.event.inputs.file_path }}"
+          RAW_FILE_PATH="${{ github.event.inputs.file_path }}"
+          FILE_PATH=$(echo "$RAW_FILE_PATH" | tr '\\' '/' | xargs)
           ARXIV_ID="${{ github.event.inputs.arxiv_id }}"
           PAGES="${{ github.event.inputs.pages }}"
           CHAPTER="${{ github.event.inputs.chapter }}"
