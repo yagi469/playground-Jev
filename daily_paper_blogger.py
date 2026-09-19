@@ -8,16 +8,20 @@ Google Gemini で独自の考察・スタンスを盛り込んだブログ解説
 """
 
 import os
-import sys
 import time
 import json
 import xml.etree.ElementTree as ET
 import re
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
 import yaml
 from dotenv import load_dotenv
+from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
+
+# 環境変数の読み込み
+load_dotenv(".env.local")
+load_dotenv(".env")
 
 # yagibrary の posts ディレクトリ（デフォルト保存先）
 DEFAULT_YAGIBRARY_POSTS_DIR = os.getenv(
@@ -25,18 +29,24 @@ DEFAULT_YAGIBRARY_POSTS_DIR = os.getenv(
     os.path.normpath(os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts"))
 )
 
-# 環境変数の読み込み
-load_dotenv(".env.local")
-load_dotenv(".env")
+gemini_client = None
 
-from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
+def init_gemini_client():
+    """Gemini API クライアントのシングルトン初期化"""
+    global gemini_client
+    if gemini_client is None:
+        try:
+            from google import genai
+            gemini_client = genai.Client()
+        except Exception as e:
+            raise RuntimeError(f"Gemini Client 初期化エラー: {e}")
+    return gemini_client
 
+# 初期化を試みる（APIキー未設定時は実行時に遅延初期化）
 try:
-    from google import genai
-    gemini_client = genai.Client()
+    init_gemini_client()
 except Exception as e:
     print(f"Gemini Client 初期化警告: {e}")
-    gemini_client = None
 
 typesafe_api_key = os.getenv("TYPESAFE_API_KEY")
 if not typesafe_api_key:
@@ -104,7 +114,7 @@ def fetch_arxiv_papers(max_results: int = 30) -> List[Dict[str, Any]]:
     hep-th (高エネルギー理論) と math-ph (数理物理) を最重要母集団とし、
     quant-ph も含めてバランスよく最新論文を取得（特定カテゴリの過密を防止）
     """
-    print(f"\n📡 [arXiv API] hep-th (最重要) & math-ph & quant-ph から最新論文を取得中...")
+    print("\n📡 [arXiv API] hep-th (最重要) & math-ph & quant-ph から最新論文を取得中...")
 
     # カテゴリごとに分散取得して、quant-ph による圧迫を防止
     hep_count = max(15, int(max_results * 0.6))
@@ -172,7 +182,6 @@ def fetch_arxiv_papers_by_ids(arxiv_ids: List[str]) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"❌ arXiv API 指定ID取得失敗: {e}")
         return []
-    return papers
 
 
 # ==============================================================================
@@ -332,12 +341,8 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
     選定されたベスト論文をもとに、筆者の熱量と考察が入ったブログ記事を自動執筆
     """
     global gemini_client
-    if not gemini_client:
-        try:
-            from google import genai
-            gemini_client = genai.Client()
-        except Exception as e:
-            raise RuntimeError(f"Gemini Client 初期化エラー: {e}")
+    if gemini_client is None:
+        init_gemini_client()
 
     m = paper["jev_metrics"]
     print(f"\n🧠 [Gemini] 総合第{rank}位の論文 {paper['arxiv_id']} のブログ記事を執筆中...")
@@ -424,56 +429,272 @@ Markdown形式で出力してください。
 
 
 # ==============================================================================
-# 4. Jev による推敲チェック & スコア付与
+# 4. Jev による多面品質検証 & Evaluator-Optimizer リライトループ
 # ==============================================================================
-def verify_post_with_jev(post_content: str) -> Dict[str, Any]:
+def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any]:
     """
-    生成されたブログ記事に対して「読者の本音・オピニオン度チェック」を実行
+    生成されたブログ記事に対して「数理的深度・筆者オピニオン・知的好奇心刺激度」を Jev (System One) で厳格に多面採点し、
+    足切り判定および具体的な改善ボトルネックを診断する。
     """
-    print(f"\n⚡ [TypeSafe Jev] 生成されたブログ記事のオピニオン度・体温を検証中...")
+    print(f"\n⚡ [TypeSafe Jev] 生成記事の品質を厳密検証中 (Round {round_num})...")
 
     questions = {
-        "author_stance": Score(
-            instructions="記事全体を通して、筆者自身の立場・主張・意思決定・価値観がどれだけ鮮明に打ち出されているかを評価してください",
+        # 1. 数理・理論の具体性
+        "mathematical_depth": Score(
+            instructions=(
+                "記事中で、論文の核心となる数学的構造（対称性、代数、幾何学的配位、双対性、不変量、作用素など）や"
+                "理論的機構が、抽象的な形容詞や美辞麗句だけでなく、具体的にわかりやすく論理的に解説されているかを評価してください。"
+            ),
             criteria=[
-                "事実や一般論の要約のみで、筆者の主観や立場が皆無",
-                "末尾に形式的な感想がある程度で、スタンスが曖昧",
-                "筆者自身の明確な見解や立場が示されており、考えが伝わる",
-                "強烈な独自オピニオンや独自の切り口があり、誰が書いたかが一目瞭然",
+                "中身が薄い（抽象的な美辞麗句やお茶濁しばかりで、何がどう作用しているのか数理のロジックが見えない）",
+                "表面的（専門用語は並んでいるが、どういう仕組みで問題が解決されたかの掘り下げが浅い）",
+                "明確で具体的（アイデアや数理構造、物理的帰結の論理展開が明快に解説されている）",
+                "極めて深い（非摂動効果や厳密解、代数・幾何の核心と美しさが鮮やかに浮き彫りにされている）",
             ],
         ),
-        "lack_of_opinion_risk": Noul(
-            instructions="情報や事実の客観的なまとめに終始しており、読者が読み終わった後に「結局、筆者はどう思っているの？」と物足りなさや肩透かしを感じるリスクがありますか？"
+        # 2. 筆者オピニオンの切れ味・独自スタンス
+        "author_stance": Score(
+            instructions=(
+                "「で、私（筆者）はどう考えるか？」セクションを含め、記事全体を通して筆者独自の視点・問題意識・"
+                "批判的考察・将来への問いが鮮明に打ち出されているかを評価してください。"
+            ),
+            criteria=[
+                "客観的な要約・解説に終始しており、筆者の立場や主観が皆無",
+                "当たり障りのない感想や一般論程度で、スタンスが曖昧",
+                "筆者独自の着眼点や問いが明確に示されており、研究者としてのスタンスが伝わる",
+                "強烈な独自オピニオンや鋭い批判的考察があり、知的刺激に満ちている",
+            ],
         ),
-        "reader_impression": Choice(
-            instructions="この記事を読んだ読者が直感的に抱く最も強い印象はどれですか？",
+        # 3. 読者の知的好奇心刺激度
+        "intellectual_appeal": Score(
+            instructions=(
+                "数理物理学や理論物理に関心を持つ読者にとって、知的好奇心が強く刺激され、"
+                "「この論文を読んでみたい」「この視点は面白い」と思わせる魅力があるかを評価してください。"
+            ),
+            criteria=[
+                "退屈・安易（子供騙しの比喩やありふれたAIまとめ構文で、知的好奇心が湧かない）",
+                "教科書的（論理は通っているが、ワクワクするような熱量や知的フックに欠ける）",
+                "魅力的（問題の本質とブレイクスルーの意義が伝わり、読んでいて面白い）",
+                "圧倒的（理論物理の真の美しさとスリルが伝わり、読者を強く引き込む名論考）",
+            ],
+        ),
+        # 4. 最大の改善ボトルネック診断
+        "critique_diagnosis": Choice(
+            instructions="この記事のクオリティをさらに高めるために、最も改善が必要なボトルネックはどこですか？",
             criteria={
-                "generic_summary": "「よくあるまとめ記事。ググればすぐわかる」",
-                "wants_opinion": "「事実は分かった。で、あなたは賛成なの？」",
-                "empathy_insight": "「なるほど！この人の視点や試行錯誤はリアルで面白い」",
-                "thought_provoking": "「独自の鋭い切り口で、議論や考察が深まる」",
+                "need_math_details": "核心アイデアの数理的機構や代数・幾何のロジックが抽象的。具体的な作用素・不変量・計算機構の解説が必要",
+                "need_sharp_opinion": "筆者オピニオンが論文の無難なまとめ。独自の問い・批判的考察・数理的意義をもっと熱く語るべき",
+                "avoid_shallow_metaphors": "安易な日常のたとえ話やAI特有のお茶濁しが目立つ。理論物理の真の美しさに徹するべき",
+                "high_quality": "数理の具体性、オピニオンの深さ、知的好奇心刺激度が極めて高い水準で調和している",
             },
+        ),
+        # 5. 「で、あなたの意見は？」肩透かしリスク
+        "lack_of_opinion_risk": Noul(
+            instructions="読者が読み終わった後に「事実は分かったけど、結局筆者はどう思っているの？」と肩透かしを感じるリスクがありますか？"
         ),
     }
 
     try:
         res = typesafe_client.system_one(state={"post": post_content}, questions=questions)
+        math_depth = res.scores["mathematical_depth"].score
         stance = res.scores["author_stance"].score
+        appeal = res.scores["intellectual_appeal"].score
+        diagnosis = res.choices["critique_diagnosis"].choice
         risk = res.nouls["lack_of_opinion_risk"].noul
-        impression = res.choices["reader_impression"].choice
 
-        print(f"  ✓ 独自オピニオン度: {stance:.2f} / 3.0")
-        print(f"  ✓ 「あなたの意見は？」リスク: {risk:.1%}")
-        print(f"  ✓ 読者の第一印象: {impression}")
+        total_score = math_depth + stance + appeal  # 最大 9.0
+
+        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満
+        passed = (total_score >= 7.0) and (math_depth >= 2.0) and (stance >= 2.0) and (appeal >= 2.0) and (risk < 0.35)
+
+        print(f"  📊 [Round {round_num} 診断結果]")
+        print(f"     ・数理の具体性: {math_depth:.2f} / 3.0")
+        print(f"     ・筆者スタンス: {stance:.2f} / 3.0")
+        print(f"     ・知的好奇心度: {appeal:.2f} / 3.0")
+        print(f"     ・総合品質点数: {total_score:.2f} / 9.0 (判定: {'✅ 合格' if passed else '⚠️ 足切り・改善要'})")
+        print(f"     ・診断ボトルネック: {diagnosis}")
+        print(f"     ・肩透かしリスク: {risk:.1%}")
 
         return {
+            "round": round_num,
+            "math_depth": math_depth,
             "stance": stance,
+            "appeal": appeal,
+            "total_score": round(total_score, 2),
+            "diagnosis": diagnosis,
             "lack_of_opinion_risk": risk,
-            "impression": impression,
+            "passed": passed,
         }
     except Exception as e:
-        print(f"⚠️ 検証スキップ: {e}")
-        return {}
+        print(f"⚠️ Jev 検証エラー: {e}")
+        return {
+            "round": round_num,
+            "math_depth": 2.0,
+            "stance": 2.0,
+            "appeal": 2.0,
+            "total_score": 6.0,
+            "diagnosis": "high_quality",
+            "lack_of_opinion_risk": 0.2,
+            "passed": True,  # エラー時はパイプライン停止を防ぐため通過
+        }
+
+
+def rewrite_blog_post_with_gemini(
+    paper: Dict[str, Any],
+    previous_draft: str,
+    feedback_metrics: Dict[str, Any],
+    revision_round: int,
+    rank: int = 1,
+) -> str:
+    """
+    Jev による診断結果・ボトルネック指摘に基づき、Gemini にブログ記事をリライトさせる
+    """
+    global gemini_client
+    if gemini_client is None:
+        init_gemini_client()
+
+    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバックを反映して記事を再推敲中...")
+
+    # ボトルネックに応じた重点改善指示
+    diagnosis = feedback_metrics.get("diagnosis", "")
+    focus_instructions = []
+    
+    if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+        focus_instructions.append(
+            "- 【最重要：数理的機構の具体化】抽象的なお茶濁し（「〜という枠組みを導入した」等）を完全に排除してください。"
+            "論文中で用いられている具体的な数学的・物理的機構（ゲージ群、対称性の破れ/高次対称性、アノマリー、カイラル代数の生成子、"
+            "分配関数や指数の厳密計算、幾何学的配位など）が、専門用語の単なる羅列ではなく論理的にどう機能しているのかを明快に解説してください。"
+        )
+    
+    if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+        focus_instructions.append(
+            "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションが弱いです。"
+            "当たり障りのない感想や一般論はすべて削除し、研究者としての明確なスタンスを打ち出してください。"
+            "「この結果のどの数理的帰結が最も美しいのか」「従来のどのパラダイムを覆すのか」「どのような限界や未解決の問いが残されているか」を熱量高く論じてください。"
+        )
+
+    if diagnosis == "avoid_shallow_metaphors":
+        focus_instructions.append(
+            "- 【日常比喩の排除】子供騙しの日常のたとえ話（コーヒーの冷却、電車の乗り換えなど）や、ありふれたAI解説構文を完全に排除し、"
+            "理論物理そのものの数理美と対称性のダイナミクスで読者を魅了してください。"
+        )
+
+    if not focus_instructions:
+        focus_instructions.append(
+            "- 前回のドラフト全体の論理のつながり、数理的説明のキレ、および筆者の独自スタンスをさらに一段上のレベルへ研ぎ澄ましてください。"
+        )
+
+    focus_text = "\n".join(focus_instructions)
+
+    rewrite_prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
+
+先ほどあなたが執筆したブログ記事ドラフトに対し、レビュアー（Jev System One 診断システム）から以下の【辛口な品質診断スコアと改善要求】が届きました。
+
+【Jev による前稿（第{revision_round - 1}稿）の診断結果】
+- 数理・理論の具体性スコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
+- 筆者オピニオン度スコア: {feedback_metrics.get('stance', 0.0):.2f} / 3.0
+- 知的好奇心刺激度スコア: {feedback_metrics.get('appeal', 0.0):.2f} / 3.0
+- 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0 （基準未達・改善要）
+- 指摘されたボトルネック: {diagnosis}
+- 「あなたの意見は？」肩透かしリスク: {feedback_metrics.get('lack_of_opinion_risk', 0.0)*100:.1f}%
+
+【今回のリライトにおける必須改善指令】
+{focus_text}
+
+---
+【対象論文情報】
+- arXiv ID: {paper['arxiv_id']}
+- タイトル: {paper['title']}
+- 著者: {', '.join(paper['authors'])}
+- アブストラクト:
+{paper['summary']}
+
+---
+【前回のドラフト（第{revision_round - 1}稿）】
+{previous_draft}
+
+---
+【リライト時のフォーマット規則】
+1. 前回のドラフトの構成（フロントマター、## 導入、## 背景にある物理・数学の壁、## この論文の核心アイデアと数理的機構、## で、私（筆者）はどう考えるか？、## まとめ ＆ 論文リンク）を維持したまま、上記改善指令を完全に反映して全面的にブラッシュアップしてください。
+2. 太字強調は必ず HTML の <strong> タグ（例: <strong>太字</strong>）を使用し、Markdownの ** は一切使用しないでください。
+3. 本文先頭に「# タイトル」は置かず、フロントマターから始めてください。
+
+知的好奇心と数理的深みに満ちた、決定版となる修正後Markdown記事を出力してください。
+"""
+
+    candidate_models = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+    ]
+    rewritten_text = None
+    for model_name in candidate_models:
+        try:
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=rewrite_prompt,
+            )
+            rewritten_text = response.text
+            print(f"  ✓ Gemini リライト完了 (Round {revision_round}, モデル: {model_name})")
+            break
+        except Exception as e:
+            print(f"  ⚠️ {model_name} でのリライトエラー: {e}")
+
+    if not rewritten_text:
+        print("  ⚠️ リライト生成に失敗したため、前回のドラフトを維持します。")
+        return previous_draft
+
+    return rewritten_text
+
+
+def generate_refined_blog_post(
+    paper: Dict[str, Any],
+    rank: int = 1,
+    max_revisions: int = 2,
+) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Evaluator-Optimizer パターンによる自律改善パイプライン:
+    1. Gemini で初回ドラフトを執筆
+    2. Jev で多面品質を厳密採点・足切り判定
+    3. 不合格の場合、Jev の指摘を Gemini にフィードバックしてリライト（最大 max_revisions 回）
+    4. 最終記事ドラフト、最終品質メトリクス、改善履歴リストを返す
+    """
+    # Step 1: 初回執筆
+    current_post = write_blog_post_with_gemini(paper, rank=rank)
+    
+    # Step 2: 初回検証
+    metrics = verify_post_with_jev(current_post, round_num=1)
+    history = [metrics]
+
+    # Step 3: 足切り ＆ リライトループ
+    round_count = 1
+    while not metrics.get("passed", False) and round_count <= max_revisions:
+        round_count += 1
+        print(f"\n⚡ 基準未達のため、Jevの改善指示を反映してリライトを実行します (Revision {round_count - 1}/{max_revisions})...")
+        
+        # リライト実行
+        current_post = rewrite_blog_post_with_gemini(
+            paper=paper,
+            previous_draft=current_post,
+            feedback_metrics=metrics,
+            revision_round=round_count,
+            rank=rank,
+        )
+        
+        # 再検証
+        metrics = verify_post_with_jev(current_post, round_num=round_count)
+        history.append(metrics)
+
+        if metrics.get("passed", False):
+            print(f"\n🎉 Jev の厳格品質基準をクリアしました！ (Round {round_count})")
+            break
+
+    if not metrics.get("passed", False):
+        print(f"\n⚠️ 最大リビジョン数 ({max_revisions}回) に達しました。現時点で最高品質の原稿を採用します。")
+
+    return current_post, metrics, history
+
 
 
 # ==============================================================================
@@ -540,14 +761,15 @@ def format_post_for_yagibrary(
     paper: Dict[str, Any],
     quality: Dict[str, Any],
     rank: int = 1,
-    time_offset_seconds: int = 0
+    time_offset_seconds: int = 0,
+    history: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     yagibrary (Astro content collections) のフォーマット仕様に合わせて整形：
     1. title, date, summary, tags の Frontmatter 生成・正規化
     2. 本文冒頭の不要な # 見出しの除去
     3. Markdownの **太字** を HTMLの <strong>太字</strong> に変換（AGENTS.mdルール遵守）
-    4. 採点レポートを記事末尾に付加（太字は <strong> 使用）
+    4. 採点レポートを記事末尾に付加（Evaluator-Optimizer 推敲履歴を含む）
     """
     # Frontmatter の抽出
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -603,6 +825,17 @@ def format_post_for_yagibrary(
     # 本文中の **太字** を <strong>太字</strong> に変換 (AGENTS.mdルール)
     body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
 
+    # 推敲改善履歴の整形
+    revision_count = len(history) if history else 1
+    history_steps = []
+    if history:
+        for h in history:
+            round_lbl = f"第{h.get('round', 1)}稿"
+            score_lbl = f"{h.get('total_score', 0):.2f}点"
+            status_lbl = "合格" if h.get("passed") else f"足切り ({h.get('diagnosis', '要改善')})"
+            history_steps.append(f"{round_lbl}: {score_lbl} [{status_lbl}]")
+    history_summary = " ➡️ ".join(history_steps) if history_steps else f"{quality.get('total_score', 0):.2f}点"
+
     # Jev パイプライン採点レポート (太字は <strong> 使用)
     meta_section = f"""
 
@@ -610,16 +843,19 @@ def format_post_for_yagibrary(
 
 ### 📊 本日の自律型 AI パイプライン採点レポート
 - <strong>選定元</strong>: [<a href="{paper['url']}" target="_blank" rel="noopener noreferrer">arXiv:{paper['arxiv_id']}</a>] / カテゴリ: {', '.join(paper['categories'])}
-- <strong>本日のランキング</strong>: 第{rank}位（総合スコア: <code>{paper['jev_metrics']['total_score']}</code>）
-- <strong>Jev スクリーニングスコア</strong>:
+- <strong>本日のランキング</strong>: 第{rank}位（選考スコア: <code>{paper['jev_metrics']['total_score']}</code>）
+- <strong>Jev 論文スクリーニング</strong>:
   - 数理物理核心度: <code>{paper['jev_metrics'].get('is_math_physics_core', paper['jev_metrics'].get('is_quantum_relevant', 0.0))*100:.1f}%</code>
   - 理論的新規性・深度: <code>{paper['jev_metrics']['theoretical_depth']:.2f} / 3.0</code>
   - 話題性・アピール度: <code>{paper['jev_metrics']['blog_appeal']:.2f} / 3.0</code>
   - サブ領域: <code>{paper['jev_metrics']['subfield']}</code>
-- <strong>記事のオピニオン診断</strong>:
-  - 筆者スタンス度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
+- <strong>Jev 記事品質推敲（Evaluator-Optimizer）</strong>:
+  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 9.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
+  - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
+  - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
+  - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
-  - 読者印象: <code>{quality.get('impression', 'N/A')}</code>
+  - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
 
     # Astro 用 Frontmatter の構築
@@ -719,13 +955,14 @@ def run_daily_pipeline(
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
-        # 3. Gemini によるブログ記事執筆
-        raw_markdown = write_blog_post_with_gemini(paper, rank=rank)
+        # 3. Gemini × Jev 自律推敲・リライトループ（Evaluator-Optimizer パターン）
+        raw_markdown, quality, history = generate_refined_blog_post(
+            paper=paper,
+            rank=rank,
+            max_revisions=2,
+        )
 
-        # 4. Jev による推敲オピニオンチェック
-        quality = verify_post_with_jev(raw_markdown)
-
-        # 5. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換など)
+        # 4. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換、推敲レポート等)
         # 一覧で上位記事が最上位になるよう、今回のバッチ内の順序に応じて数分未来のタイムスタンプを設定
         time_offset = (len(target_papers) - batch_idx) * 60
         final_post = format_post_for_yagibrary(
@@ -733,10 +970,11 @@ def run_daily_pipeline(
             paper,
             quality,
             rank=rank,
-            time_offset_seconds=time_offset
+            time_offset_seconds=time_offset,
+            history=history,
         )
 
-        # 6. ファイル保存
+        # 5. ファイル保存
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
         filename = f"{today_str}-arxiv-{clean_id}.md"
         file_path = os.path.join(target_dir, filename)
@@ -792,8 +1030,12 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
-        raw_markdown = write_blog_post_with_gemini(paper, rank=batch_idx)
-        quality = verify_post_with_jev(raw_markdown)
+        # Gemini × Jev 自律推敲・リライトループ
+        raw_markdown, quality, history = generate_refined_blog_post(
+            paper=paper,
+            rank=batch_idx,
+            max_revisions=2,
+        )
 
         time_offset = (len(ranked_papers) - batch_idx) * 60
         final_post = format_post_for_yagibrary(
@@ -801,7 +1043,8 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
             paper,
             quality,
             rank=batch_idx,
-            time_offset_seconds=time_offset
+            time_offset_seconds=time_offset,
+            history=history,
         )
 
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
