@@ -45,21 +45,21 @@
 
 ```mermaid
 flowchart LR
-    subgraph Client [ブラウザ / Web UI]
-        Input[評価対象テキスト (State)]
-        Questions[型付き質問定義]
-        UI_Jev[リアルタイム確率・スコア可視化]
-        UI_Gemini[推敲案・Diffハイライト]
+    subgraph Client ["ブラウザ / Web UI"]
+        Input["評価対象テキスト (State)"]
+        Questions["型付き質問定義"]
+        UI_Jev["リアルタイム確率・スコア可視化"]
+        UI_Gemini["推敲案・Diffハイライト"]
     end
 
-    subgraph SystemOne [System One: TypeSafe Jev]
-        JevAPI[TypeSafe Client]
-        ParallelEval[並列推論: Choice / Score / Noul]
+    subgraph SystemOne ["System One: TypeSafe Jev"]
+        JevAPI["TypeSafe Client"]
+        ParallelEval["並列推論: Choice / Score / Noul"]
     end
 
-    subgraph SystemTwo [System Two: Google Gemini]
-        Diagnosis[課題・弱点の自動抽出]
-        Rewriter[Gemini 2.5 / 1.5 Flash による推敲]
+    subgraph SystemTwo ["System Two: Google Gemini"]
+        Diagnosis["課題・弱点の自動抽出"]
+        Rewriter["Gemini による推敲・リライト"]
     end
 
     Input --> JevAPI
