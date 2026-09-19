@@ -1,0 +1,74 @@
+name: Daily arXiv Paper Blogger
+
+on:
+  schedule:
+    # 毎日 日本時間 08:00 (UTC 23:00) に自動実行
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+    inputs:
+      max_papers:
+        description: '取得するarXiv論文の件数 (例: 15)'
+        required: false
+        default: '15'
+        type: string
+      top_n_to_blog:
+        description: 'ブログ記事化する上位件数 (例: 3)'
+        required: false
+        default: '3'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate_and_publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout playground-Jev
+        uses: actions/checkout@v4
+
+      - name: Checkout yagibrary
+        uses: actions/checkout@v4
+        with:
+          repository: yagi469/yagibrary
+          token: ${{ secrets.GH_PAT }}
+          path: yagibrary
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Daily Paper Blogger Pipeline
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YAGIBRARY_POSTS_DIR: ${{ github.workspace }}/yagibrary/src/content/posts
+        run: |
+          MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
+          TOP_N="${{ github.event.inputs.top_n_to_blog || '3' }}"
+          echo "🚀 Running blogger pipeline (max_papers=$MAX_PAPERS, top_n=$TOP_N)..."
+          python daily_paper_blogger.py "$MAX_PAPERS" "$TOP_N"
+
+      - name: Commit and push changes to yagibrary
+        working-directory: yagibrary
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git status
+          if [ -n "$(git status --porcelain src/content/posts)" ]; then
+            git add src/content/posts
+            TODAY=$(date +'%Y-%m-%d')
+            git commit -m "post: auto-generate daily arXiv top papers for ${TODAY}"
+            git push origin master
+            echo "✅ Successfully pushed new articles to yagibrary! This triggers deploy.yml on yagibrary."
+          else
+            echo "ℹ️ No new articles were generated to commit."
+          fi
