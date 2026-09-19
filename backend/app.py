@@ -234,6 +234,56 @@ PRESETS = {
             },
         },
     },
+    "opinion_audit": {
+        "title": "読者の本音・オピニオン診断（『で、あなたの意見は？』チェッカー）",
+        "description": "客観的なまとめに終始していないか？筆者の独自スタンス・生々しい体験談・体温が伝わっているかを辛口測定",
+        "default_text": "最近話題の生成AIですが、文章作成やプログラミング支援など様々な分野で活用が進んでいます。従来の検索エンジンと比較して、対話形式で知りたい情報を得られる点が特徴です。多くの企業が導入を進めており、業務効率化が期待されています。今後の発展にも注目が集まっています。",
+        "questions": {
+            "author_stance": {
+                "type": "score",
+                "label": "筆者のスタンス・独自オピニオン度 (Score: 0〜3)",
+                "instructions": "記事全体を通して、筆者自身の立場・主張・意思決定・価値観がどれだけ鮮明に打ち出されているかを評価してください",
+                "criteria": [
+                    "事実や一般論の要約のみで、筆者の主観や立場が皆無",
+                    "末尾に形式的な感想がある程度で、スタンスが曖昧",
+                    "筆者自身の明確な見解や立場が示されており、考えが伝わる",
+                    "強烈な独自オピニオンや独自の切り口があり、誰が書いたかが一目瞭然",
+                ],
+            },
+            "lack_of_opinion_risk": {
+                "type": "noul",
+                "label": "「で、あなたの意見は？」と突っ込まれるリスク (Noul)",
+                "instructions": "情報や事実の客観的なまとめに終始しており、読者が読み終わった後に「結局、筆者はどう思っているの？」と物足りなさや肩透かしを感じるリスクがありますか？",
+            },
+            "first_hand_experience": {
+                "type": "score",
+                "label": "一次体験・手触り感のある具体エピソード (Score: 0〜3)",
+                "instructions": "筆者が実際に試した試行錯誤、失敗談、独自の生データなど、他人に真似できない一次情報が含まれているかを評価してください",
+                "criteria": [
+                    "ネットの又聞きや机上の空論のみ",
+                    "一般的な事例に少し触れている程度",
+                    "自身の実践や具体的なエピソード・苦労が含まれている",
+                    "泥臭い検証データやリアルな生々しい体験が詰まっている",
+                ],
+            },
+            "ai_generic_vibe": {
+                "type": "noul",
+                "label": "AIが書いたような無味乾燥・当たり障りのなさ (Noul)",
+                "instructions": "誰が書いても同じような中立で無難な表現に終始しており、人間らしい感情や体温、こだわりが感じられませんか？",
+            },
+            "reader_impression": {
+                "type": "choice",
+                "label": "読者が抱く第一印象 (Choice)",
+                "instructions": "この記事を読んだ読者が直感的に抱く最も強い印象はどれですか？",
+                "criteria": {
+                    "generic_summary": "「よくあるまとめ記事。ネットでググれば数秒でわかる」",
+                    "wants_opinion": "「事実は分かった。で、あなたは賛成なの？使ってるの？」",
+                    "empathy_insight": "「なるほど！この人の視点や試行錯誤はリアルで面白い」",
+                    "thought_provoking": "「独自の鋭い切り口で、議論や考察が深まる」",
+                },
+            },
+        },
+    },
 }
 
 
@@ -425,6 +475,10 @@ def improve_with_gemini(req: ImproveRequest):
                 detected_weaknesses.append("誇大表現・煽りニュアンスが強く読者の反感を買う恐れがある")
             elif "appeal" in q_id.lower() and s_val < 2.0:
                 detected_weaknesses.append("クリック魅力度・読者の関心を惹くフックが不足している")
+            elif "stance" in q_id.lower() and s_val < 2.0:
+                detected_weaknesses.append("筆者自身のスタンス・独自の見解が薄く、誰が書いたか分からない")
+            elif "experience" in q_id.lower() and s_val < 2.0:
+                detected_weaknesses.append("自身の実践や試行錯誤・泥臭い一次体験のエピソードが不足している")
         elif q_type == "noul":
             n_val = item.get("noul", 0)
             pct = int(n_val * 100)
@@ -437,6 +491,10 @@ def improve_with_gemini(req: ImproveRequest):
                 detected_weaknesses.append("読者が読むメリットが直感的に伝わっていない")
             elif "block" in q_id.lower() and n_val > 0.5:
                 detected_weaknesses.append("安全基準や規約に抵触するリスクがある")
+            elif "lack_of_opinion" in q_id.lower() and n_val > 0.4:
+                detected_weaknesses.append("一般論のまとめに終始しており、『で、あなたの意見は？』と物足りなさを感じさせる")
+            elif "ai_generic" in q_id.lower() and n_val > 0.4:
+                detected_weaknesses.append("当たり障りのないAI生成・教科書調になっており、筆者の体温や感情が感じられない")
 
     diagnosis_text = "\n".join(diagnosis_lines)
     weaknesses_text = (
@@ -461,6 +519,7 @@ System One AI (Jev) による高速な客観診断によって、以下の文章
 【あなたの任務】
 1. 元の文章が持つ意図・良さ・筆者の個性を損なうことなく、上記の【検出された改善課題】をピンポイントで解消した【改善リライト案】を作成してください。
    - 特に「誤解・反発リスク」が検出されている場合、煽りや極端な断定を和らげ、前提条件（「※検証環境や作業内容によりますが」等）や客観的な根拠を自然に補足して、信頼性と説得力を劇的に高めてください。
+   - 特に「で、あなたの意見は？」「スタンスの薄さ」「無味乾燥」が検出されている場合、一般論やまとめに終始せず、「私はこう考える」「実際に試してここが良かった/困った」「ここが最大の盲点だ」という筆者独自の主観・切り口・人間らしい体温を前面に注入してリライトしてください。
 2. どこをどのように変更し、なぜ良くなったのかの【改善ポイント解説】を箇条書きで3点程度挙げてください。
 3. 編集長としての【プロのワンポイント助言】を短く添えてください。
 

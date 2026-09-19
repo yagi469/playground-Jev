@@ -569,10 +569,10 @@ async function evaluateAndRenderComparison(beforeResults, improvedText) {
         const aPct = (aYes * 100).toFixed(1);
         const delta = (parseFloat(aPct) - parseFloat(bPct)).toFixed(1);
 
-        const isRiskMetric = qId.includes("misunderstanding") || qId.includes("block") || qId.includes("exploit") || qId.includes("risk");
+        const isRiskMetric = qId.includes("misunderstanding") || qId.includes("block") || qId.includes("exploit") || qId.includes("risk") || qId.includes("lack_of_opinion") || qId.includes("ai_generic");
         if (isRiskMetric) {
           if (parseFloat(delta) < -2.0) {
-            deltaBadgeHtml = `<span class="comp-delta-badge reduced-risk">${delta}% ↓ リスク低減</span>`;
+            deltaBadgeHtml = `<span class="comp-delta-badge reduced-risk">${delta}% ↓ リスク抑制・改善</span>`;
           } else if (parseFloat(delta) > 2.0) {
             deltaBadgeHtml = `<span class="comp-delta-badge warning">+${delta}% ↑ リスク増加</span>`;
           } else {
@@ -580,9 +580,9 @@ async function evaluateAndRenderComparison(beforeResults, improvedText) {
           }
         } else {
           if (parseFloat(delta) > 2.0) {
-            deltaBadgeHtml = `<span class="comp-delta-badge improved">+${delta}% ↑ 実践度向上</span>`;
+            deltaBadgeHtml = `<span class="comp-delta-badge improved">+${delta}% ↑ 実践度・魅力向上</span>`;
           } else if (parseFloat(delta) < -2.0) {
-            deltaBadgeHtml = `<span class="comp-delta-badge warning">${delta}% ↓</span>`;
+            deltaBadgeHtml = `<span class="comp-delta-badge warning">${delta}% ↓ 低下</span>`;
           } else {
             deltaBadgeHtml = `<span class="comp-delta-badge neutral">±0% 維持</span>`;
           }
