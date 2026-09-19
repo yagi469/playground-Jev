@@ -319,7 +319,7 @@ title: "思わずクリックしたくなるキャッチーな日本語タイト
 summary: "120〜180文字程度の魅力的な記事要約（何が解決し、なぜ面白いのかが伝わる文章）"
 tags:
   - 物理学
-  - （論文内容に即したタグを3〜5個。例: 量子情報, ホログラフィ, 量子誤り訂正, AdS/CFTなど）
+  - （論文内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用。例: 量子情報, ホログラフィ, 量子誤り訂正, AdS-CFTなど）
 ---
 
 2. **太字・強調ルールの遵守（最重要）**:
@@ -526,11 +526,14 @@ def format_post_for_yagibrary(
     tags = parsed_meta.get("tags")
     if not tags or not isinstance(tags, list):
         tags = ["物理学", "量子情報", paper["jev_metrics"].get("subfield", "理論物理")]
-    # 重複除去
+    # 重複除去 & URL・ルーティングで壊れないようサニタイズ（スラッシュ等の置換）
     cleaned_tags = []
     for t in tags:
-        if str(t).strip() and str(t).strip() not in cleaned_tags:
-            cleaned_tags.append(str(t).strip())
+        t_clean = str(t).strip()
+        # Astro の [tag].astro ルーティングで階層エラーになるためスラッシュ等をハイフンに置換
+        t_clean = t_clean.replace('/', '-').replace('\\', '-').replace(':', '-')
+        if t_clean and t_clean not in cleaned_tags:
+            cleaned_tags.append(t_clean)
 
     # JST タイムスタンプ（順位ごとに数分オフセットをつけて1位が最上位になるよう調整可能）
     jst = timezone(timedelta(hours=9))
