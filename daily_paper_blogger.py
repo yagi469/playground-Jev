@@ -417,7 +417,63 @@ def verify_post_with_jev(post_content: str) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 5. yagibrary (Astro) 向けフォーマット整形処理
+# 5. 既存記事の重複チェック & 繰り上げ判定
+# ==============================================================================
+def get_existing_arxiv_ids(posts_dir: str) -> set:
+    """
+    保存先ディレクトリ（posts_dir）内の既存記事から、既に執筆済みの arXiv ID を収集。
+    ファイル名（*-arxiv-*.md）および記事本文の URL から網羅的に抽出。
+    """
+    existing_ids = set()
+    if not os.path.exists(posts_dir):
+        return existing_ids
+
+    for fname in os.listdir(posts_dir):
+        if not fname.endswith(".md"):
+            continue
+
+        # 1. ファイル名から抽出 (例: 2026-09-19-arxiv-2609-20802v1.md)
+        m = re.search(r"arxiv-([a-zA-Z0-9_\-]+)\.md$", fname)
+        if m:
+            clean_id = m.group(1).lower()
+            existing_ids.add(clean_id)
+            # バージョン (v1, v2 等) を除いたベース ID
+            base_clean = re.sub(r"v\d+$", "", clean_id)
+            existing_ids.add(base_clean)
+            existing_ids.add(clean_id.replace('-', '.'))
+            existing_ids.add(base_clean.replace('-', '.'))
+
+        # 2. ファイル本文の先頭部分からも arXiv ID を念のため抽出
+        filepath = os.path.join(posts_dir, fname)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                header = "".join([f.readline() for _ in range(70)])
+                found = re.findall(r"arxiv(?:\.org/(?:abs|pdf)/|:?\s*)([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", header, re.IGNORECASE)
+                for fid in found:
+                    fid_clean = fid.lower().replace('/', '_').replace('.', '-')
+                    existing_ids.add(fid.lower())
+                    existing_ids.add(fid_clean)
+                    existing_ids.add(re.sub(r"v\d+$", "", fid.lower()))
+                    existing_ids.add(re.sub(r"v\d+$", "", fid_clean))
+        except Exception:
+            pass
+
+    return existing_ids
+
+
+def is_paper_already_blogged(paper: Dict[str, Any], existing_ids: set) -> bool:
+    """論文が既に記事化されているかチェック"""
+    raw_id = paper.get("arxiv_id", "").lower()
+    clean_id = raw_id.replace('/', '_').replace('.', '-')
+    base_id = re.sub(r"v\d+$", "", raw_id)
+    base_clean = re.sub(r"v\d+$", "", clean_id)
+
+    candidates = {raw_id, clean_id, base_id, base_clean}
+    return any(c in existing_ids for c in candidates)
+
+
+# ==============================================================================
+# 6. yagibrary (Astro) 向けフォーマット整形処理
 # ==============================================================================
 def format_post_for_yagibrary(
     raw_markdown: str,
@@ -565,19 +621,38 @@ def run_daily_pipeline(
         print(f"  第{i+1}位: [{p['arxiv_id']}] {p['title'][:65]}...")
         print(f"         総合スコア: {m['total_score']} | 関連度: {m['is_quantum_relevant']:.1%} | 魅力: {m['blog_appeal']:.1f} | {m['subfield']}")
 
-    # 記事化対象の選定（上位 top_n_to_blog 件）
-    target_papers = ranked_papers[:top_n_to_blog]
-    generated_files = []
+    # 既存記事の arXiv ID を検出
+    existing_arxiv_ids = get_existing_arxiv_ids(target_dir)
+    if existing_arxiv_ids:
+        print(f"📚 既存記事ディレクトリ ({target_dir}) から執筆済み arXiv ID を照合中...")
 
-    print(f"\n📝 上位 {len(target_papers)} 件の論文を順次ブログ記事化します...")
+    # 記事化対象の選定（未執筆のものを上位から top_n_to_blog 件選定）
+    target_papers = []
+    for rank_idx, paper in enumerate(ranked_papers):
+        overall_rank = rank_idx + 1
+        paper['overall_rank'] = overall_rank
+        if is_paper_already_blogged(paper, existing_arxiv_ids):
+            print(f"  ⏩ [第{overall_rank}位: {paper['arxiv_id']}] は既に記事が存在するためスキップ")
+            continue
+        target_papers.append(paper)
+        if len(target_papers) >= top_n_to_blog:
+            break
+
+    if not target_papers:
+        print("\n✨ 取得した上位論文はすべて執筆済みです。新規生成をスキップして終了します。")
+        return []
+
+    print(f"\n📝 未執筆の論文 {len(target_papers)} 件を順次ブログ記事化します...")
 
     os.makedirs(target_dir, exist_ok=True)
     today_str = datetime.now().strftime("%Y-%m-%d")
+    generated_files = []
 
     for i, paper in enumerate(target_papers):
-        rank = i + 1
+        rank = paper.get('overall_rank', i + 1)
+        batch_idx = i + 1
         print("\n" + "-" * 65)
-        print(f" 🖋️ [記事執筆・整形 {rank}/{len(target_papers)}] 第{rank}位: {paper['arxiv_id']}")
+        print(f" 🖋️ [記事執筆・整形 {batch_idx}/{len(target_papers)}] 総合第{rank}位: {paper['arxiv_id']}")
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
@@ -588,8 +663,8 @@ def run_daily_pipeline(
         quality = verify_post_with_jev(raw_markdown)
 
         # 5. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換など)
-        # 一覧で1位が最上位になるよう、順位に応じて数分未来のタイムスタンプを設定
-        time_offset = (len(target_papers) - rank) * 60
+        # 一覧で上位記事が最上位になるよう、今回のバッチ内の順序に応じて数分未来のタイムスタンプを設定
+        time_offset = (len(target_papers) - batch_idx) * 60
         final_post = format_post_for_yagibrary(
             raw_markdown,
             paper,
