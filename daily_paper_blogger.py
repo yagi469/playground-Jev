@@ -504,10 +504,6 @@ tags:
      数式
      $$
 
-5. **理論対応・数理構造の Mermaid ダイアグラム化（必須）**:
-   - 記事の理解を劇的に深めるため、論文内の主要概念の対応関係（例: 4d SCFT ➡️ 2d VOA、AdS境界量 ➡️ バルク幾何、S双対性マップ、理論の分類フローなど）を視覚化する Mermaid 図（```mermaid ... ```）を必ず1点以上、適切な箇所（「## この論文の核心アイデアと数理的機構」等）に挿入してください。
-   - 構文エラーを防ぐため、ノード名に括弧 `(...)` や特殊記号を含む場合は必ず二重引用符 `["..."]` で囲んでください（例: `A["4d N=2 SCFT"] --> B["2d Chiral Algebra (VOA)"]`）。
-
 Markdown形式で出力してください。
 """
 
@@ -586,26 +582,17 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
                 "圧倒的（理論物理の真の美しさとスリルが伝わり、読者を強く引き込む名論考）",
             ],
         ),
-        # 4. Mermaid ダイアグラムの有無と効果
-        "mermaid_visualization": Choice(
-            instructions="記事内に理論の対応関係や数理構造を視覚化する Mermaid ダイアグラム（```mermaid ... ```）が効果的に配置されていますか？",
-            criteria={
-                "present_and_effective": "Mermaid ダイアグラムが適切に配置され、理論の対応関係や概念構造の理解を大いに助けている",
-                "missing_or_ineffective": "Mermaid ダイアグラムが存在しない、あるいは図が単純すぎて有益でない",
-            },
-        ),
-        # 5. 最大の改善ボトルネック診断
+        # 4. 最大の改善ボトルネック診断
         "critique_diagnosis": Choice(
             instructions="この記事のクオリティをさらに高めるために、最も改善が必要なボトルネックはどこですか？",
             criteria={
                 "need_math_details": "核心アイデアの数理的機構や代数・幾何のロジックが抽象的。具体的な作用素・不変量・計算機構の解説が必要",
-                "need_mermaid_map": "理論の対応関係や双対性を俯瞰する Mermaid ダイアグラム（```mermaid ... ```）が不足している",
                 "need_sharp_opinion": "筆者オピニオンが論文の無難なまとめ。独自の問い・批判的考察・数理的意義をもっと熱く語るべき",
                 "avoid_shallow_metaphors": "安易な日常のたとえ話やAI特有のお茶濁しが目立つ。理論物理の真の美しさに徹するべき",
-                "high_quality": "数理の具体性、オピニオンの深さ、視覚的ダイアグラム、知的好奇心刺激度が極めて高い水準で調和している",
+                "high_quality": "数理の具体性、オピニオンの深さ、知的好奇心刺激度が極めて高い水準で調和している",
             },
         ),
-        # 6. 「で、あなたの意見は？」肩透かしリスク
+        # 5. 「で、あなたの意見は？」肩透かしリスク
         "lack_of_opinion_risk": Noul(
             instructions="読者が読み終わった後に「事実は分かったけど、結局筆者はどう思っているの？」と肩透かしを感じるリスクがありますか？"
         ),
@@ -616,30 +603,24 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         math_depth = res.scores["mathematical_depth"].score
         stance = res.scores["author_stance"].score
         appeal = res.scores["intellectual_appeal"].score
-        mermaid_choice = res.choices["mermaid_visualization"].choice
         diagnosis = res.choices["critique_diagnosis"].choice
         risk = res.nouls["lack_of_opinion_risk"].noul
 
-        has_mermaid_syntax = bool(re.search(r"```mermaid[\s\S]+?```", post_content))
-        has_mermaid = has_mermaid_syntax and (mermaid_choice == "present_and_effective")
-
         total_score = math_depth + stance + appeal  # 最大 9.0
 
-        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満、かつ Mermaid図あり
+        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満
         passed = (
             (total_score >= 7.0)
             and (math_depth >= 2.0)
             and (stance >= 2.0)
             and (appeal >= 2.0)
             and (risk < 0.35)
-            and has_mermaid
         )
 
         print(f"  📊 [Round {round_num} 診断結果]")
         print(f"     ・数理の具体性: {math_depth:.2f} / 3.0")
         print(f"     ・筆者スタンス: {stance:.2f} / 3.0")
         print(f"     ・知的好奇心度: {appeal:.2f} / 3.0")
-        print(f"     ・Mermaid図: {'✅ あり (効果的)' if has_mermaid else '⚠️ なし/不十分'}")
         print(f"     ・総合品質点数: {total_score:.2f} / 9.0 (判定: {'✅ 合格' if passed else '⚠️ 足切り・改善要'})")
         print(f"     ・診断ボトルネック: {diagnosis}")
         print(f"     ・肩透かしリスク: {risk:.1%}")
@@ -649,7 +630,6 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
             "math_depth": math_depth,
             "stance": stance,
             "appeal": appeal,
-            "has_mermaid": has_mermaid,
             "total_score": round(total_score, 2),
             "diagnosis": diagnosis,
             "lack_of_opinion_risk": risk,
@@ -657,13 +637,11 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         }
     except Exception as e:
         print(f"⚠️ Jev 検証エラー: {e}")
-        has_mermaid_syntax = bool(re.search(r"```mermaid[\s\S]+?```", post_content))
         return {
             "round": round_num,
             "math_depth": 2.0,
             "stance": 2.0,
             "appeal": 2.0,
-            "has_mermaid": has_mermaid_syntax,
             "total_score": 6.0,
             "diagnosis": "high_quality",
             "lack_of_opinion_risk": 0.2,
@@ -696,13 +674,6 @@ def rewrite_blog_post_with_gemini(
             "- 【最重要：数理的機構の具体化】抽象的なお茶濁し（「〜という枠組みを導入した」等）を完全に排除してください。"
             "論文中で用いられている具体的な数学的・物理的機構（ゲージ群、対称性の破れ/高次対称性、アノマリー、カイラル代数の生成子、"
             "分配関数や指数の厳密計算、幾何学的配位など）が、専門用語の単なる羅列ではなく論理的にどう機能しているのかを明快に解説してください。"
-        )
-    
-    if not feedback_metrics.get("has_mermaid", True) or diagnosis == "need_mermaid_map":
-        focus_instructions.append(
-            "- 【最重要：Mermaid ダイアグラムの追加】記事内に理論の対応関係（4d SCFT ➡️ 2d VOA など）や"
-            "双対性マップ、真空の分岐図などを表現する Mermaid 図（```mermaid ... ```）を必ず1点以上配置してください。"
-            "ノード名に括弧や特殊文字がある場合は構文エラー防止のため必ず二重引用符 [\"...\"] で囲んでください。"
         )
 
     if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
@@ -748,7 +719,6 @@ def rewrite_blog_post_with_gemini(
 - 数理・理論の具体性スコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
 - 筆者オピニオン度スコア: {feedback_metrics.get('stance', 0.0):.2f} / 3.0
 - 知的好奇心刺激度スコア: {feedback_metrics.get('appeal', 0.0):.2f} / 3.0
-- Mermaid図の有無: {'あり' if feedback_metrics.get('has_mermaid') else 'なし (要追加)'}
 - 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0 （基準未達・改善要）
 - 指摘されたボトルネック: {diagnosis}
 - 「あなたの意見は？」肩透かしリスク: {feedback_metrics.get('lack_of_opinion_risk', 0.0)*100:.1f}%
@@ -774,7 +744,6 @@ def rewrite_blog_post_with_gemini(
 2. 太字強調は必ず HTML の <strong> タグ（例: <strong>太字</strong>）を使用し、Markdownの ** は一切使用しないでください。
 3. 本文先頭に「# タイトル」は置かず、フロントマターから始めてください。
 4. 数式ブロックは必ず独立した行（$$\\n数式\\n$$）で出力してください。
-5. 数理構造や理論の全体像を視覚化する Mermaid ダイアグラム（```mermaid ... ```）を必ず1点以上配置してください（ノード名は [\"...\"] でクォート）。
 
 知的好奇心と数理的深みに満ちた、決定版となる修正後Markdown記事を出力してください。
 """
@@ -1016,7 +985,6 @@ def format_post_for_yagibrary(
   - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
   - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
   - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
-  - Mermaid 概念マップ: <code>{'✅ 配置済 (効果的)' if quality.get('has_mermaid') else '⚠️ 未配置'}</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
   - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
