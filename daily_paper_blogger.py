@@ -267,7 +267,7 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
 # ==============================================================================
 # 3. Google Gemini による本格ブログ執筆
 # ==============================================================================
-def write_blog_post_with_gemini(paper: Dict[str, Any]) -> str:
+def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
     """
     選定されたベスト論文をもとに、筆者の熱量と考察が入ったブログ記事を自動執筆
     """
@@ -280,7 +280,7 @@ def write_blog_post_with_gemini(paper: Dict[str, Any]) -> str:
             raise RuntimeError(f"Gemini Client 初期化エラー: {e}")
 
     m = paper["jev_metrics"]
-    print(f"\n🧠 [Gemini] 総合第1位の論文 {paper['arxiv_id']} のブログ記事を執筆中...")
+    print(f"\n🧠 [Gemini] 総合第{rank}位の論文 {paper['arxiv_id']} のブログ記事を執筆中...")
     print(f"   タイトル: {paper['title']}")
     print(f"   分野: {m['subfield']} (総合スコア: {m['total_score']})")
 
@@ -422,7 +422,9 @@ def verify_post_with_jev(post_content: str) -> Dict[str, Any]:
 def format_post_for_yagibrary(
     raw_markdown: str,
     paper: Dict[str, Any],
-    quality: Dict[str, Any]
+    quality: Dict[str, Any],
+    rank: int = 1,
+    time_offset_seconds: int = 0
 ) -> str:
     """
     yagibrary (Astro content collections) のフォーマット仕様に合わせて整形：
@@ -474,9 +476,10 @@ def format_post_for_yagibrary(
         if str(t).strip() and str(t).strip() not in cleaned_tags:
             cleaned_tags.append(str(t).strip())
 
-    # JST タイムスタンプ
+    # JST タイムスタンプ（順位ごとに数分オフセットをつけて1位が最上位になるよう調整可能）
     jst = timezone(timedelta(hours=9))
-    now_jst = datetime.now(jst).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    post_time = datetime.now(jst) + timedelta(seconds=time_offset_seconds)
+    now_jst = post_time.strftime("%Y-%m-%dT%H:%M:%S+09:00")
 
     # 本文中の **太字** を <strong>太字</strong> に変換 (AGENTS.mdルール)
     body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
@@ -488,6 +491,7 @@ def format_post_for_yagibrary(
 
 ### 📊 本日の自律型 AI パイプライン採点レポート
 - <strong>選定元</strong>: [<a href="{paper['url']}" target="_blank" rel="noopener noreferrer">arXiv:{paper['arxiv_id']}</a>] / カテゴリ: {', '.join(paper['categories'])}
+- <strong>本日のランキング</strong>: 第{rank}位（総合スコア: <code>{paper['jev_metrics']['total_score']}</code>）
 - <strong>Jev スクリーニングスコア</strong>:
   - 量子情報・物理合致度: <code>{paper['jev_metrics']['is_quantum_relevant']*100:.1f}%</code>
   - 理論的新規性・深度: <code>{paper['jev_metrics']['theoretical_depth']:.2f} / 3.0</code>
@@ -521,10 +525,15 @@ def format_post_for_yagibrary(
 # ==============================================================================
 # メイン実行関数
 # ==============================================================================
-def run_daily_pipeline(max_papers: int = 15, output_dir: Optional[str] = None) -> str:
+def run_daily_pipeline(
+    max_papers: int = 15,
+    top_n_to_blog: int = 3,
+    output_dir: Optional[str] = None
+) -> List[str]:
     print("\n" + "=" * 65)
     print(" 🚀 arXiv × TypeSafe Jev × Gemini 全自動論文ブロガー 起動")
     print(" 🎯 対象カテゴリ: hep-th (高エネルギー理論) & quant-ph (量子情報)")
+    print(f" 📑 記事生成対象: 上位 {top_n_to_blog} 件")
     print("=" * 65)
 
     # 保存先ディレクトリの決定 (yagibrary の posts ディレクトリを優先)
@@ -540,54 +549,85 @@ def run_daily_pipeline(max_papers: int = 15, output_dir: Optional[str] = None) -
     papers = fetch_arxiv_papers(max_results=max_papers)
     if not papers:
         print("❌ 論文を取得できませんでした。終了します。")
-        return ""
+        return []
 
     # 2. Jev で採点 & ランキング
     ranked_papers = screen_and_rank_papers_with_jev(papers)
     if not ranked_papers:
         print("❌ スクリーニングに失敗しました。")
-        return ""
+        return []
 
-    # 上位3件をサマリー表示
-    print("\n🏆 【本日の TOP 3 厳選論文】")
-    for i, p in enumerate(ranked_papers[:3]):
+    # 上位件数をサマリー表示
+    display_count = min(len(ranked_papers), max(3, top_n_to_blog))
+    print(f"\n🏆 【本日の TOP {display_count} 厳選論文】")
+    for i, p in enumerate(ranked_papers[:display_count]):
         m = p["jev_metrics"]
         print(f"  第{i+1}位: [{p['arxiv_id']}] {p['title'][:65]}...")
         print(f"         総合スコア: {m['total_score']} | 関連度: {m['is_quantum_relevant']:.1%} | 魅力: {m['blog_appeal']:.1f} | {m['subfield']}")
 
-    best_paper = ranked_papers[0]
+    # 記事化対象の選定（上位 top_n_to_blog 件）
+    target_papers = ranked_papers[:top_n_to_blog]
+    generated_files = []
 
-    # 3. Gemini によるブログ記事執筆
-    raw_markdown = write_blog_post_with_gemini(best_paper)
+    print(f"\n📝 上位 {len(target_papers)} 件の論文を順次ブログ記事化します...")
 
-    # 4. Jev による推敲オピニオンチェック
-    quality = verify_post_with_jev(raw_markdown)
-
-    # 5. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換など)
-    final_post = format_post_for_yagibrary(raw_markdown, best_paper, quality)
-
-    # 6. ファイル保存
     os.makedirs(target_dir, exist_ok=True)
     today_str = datetime.now().strftime("%Y-%m-%d")
-    clean_id = best_paper['arxiv_id'].replace('/', '_').replace('.', '-')
-    filename = f"{today_str}-arxiv-{clean_id}.md"
-    file_path = os.path.join(target_dir, filename)
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(final_post)
+    for i, paper in enumerate(target_papers):
+        rank = i + 1
+        print("\n" + "-" * 65)
+        print(f" 🖋️ [記事執筆・整形 {rank}/{len(target_papers)}] 第{rank}位: {paper['arxiv_id']}")
+        print(f"    タイトル: {paper['title']}")
+        print("-" * 65)
+
+        # 3. Gemini によるブログ記事執筆
+        raw_markdown = write_blog_post_with_gemini(paper, rank=rank)
+
+        # 4. Jev による推敲オピニオンチェック
+        quality = verify_post_with_jev(raw_markdown)
+
+        # 5. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換など)
+        # 一覧で1位が最上位になるよう、順位に応じて数分未来のタイムスタンプを設定
+        time_offset = (len(target_papers) - rank) * 60
+        final_post = format_post_for_yagibrary(
+            raw_markdown,
+            paper,
+            quality,
+            rank=rank,
+            time_offset_seconds=time_offset
+        )
+
+        # 6. ファイル保存
+        clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
+        filename = f"{today_str}-arxiv-{clean_id}.md"
+        file_path = os.path.join(target_dir, filename)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(final_post)
+
+        generated_files.append(file_path)
+        print(f" ✅ [第{rank}位] 記事保存完了: {file_path}")
 
     print("\n" + "=" * 65)
-    print(f" 🎉 ブログ記事の自動生成が完了しました！")
-    print(f" 📝 保存先: {file_path}")
+    print(f" 🎉 全 {len(generated_files)} 件のブログ記事の自動生成が完了しました！")
+    for idx, fp in enumerate(generated_files):
+        print(f"   第{idx+1}位: {fp}")
     print("=" * 65)
-    return file_path
+    return generated_files
 
 
 if __name__ == "__main__":
     count = 10
+    top_n = 3
     if len(sys.argv) > 1:
         try:
             count = int(sys.argv[1])
         except ValueError:
             pass
-    run_daily_pipeline(max_papers=count)
+    if len(sys.argv) > 2:
+        try:
+            top_n = int(sys.argv[2])
+        except ValueError:
+            pass
+    run_daily_pipeline(max_papers=count, top_n_to_blog=top_n)
