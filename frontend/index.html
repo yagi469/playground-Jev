@@ -41,6 +41,21 @@
       </p>
     </section>
 
+    <!-- Autonomous Paper Blogger Action Bar -->
+    <div class="paper-blogger-banner">
+      <div class="blogger-banner-content">
+        <div class="blogger-banner-tag">🚀 Autonomous Pipeline</div>
+        <div class="blogger-banner-text">
+          <strong>arXiv 自動選定 ➔ ブログ執筆 (hep-th × quant-ph)</strong>
+          <span>Jev が最新論文を多面採点して最高峰の1本を選定し、Gemini が独自のオピニオン付きで記事を自動執筆</span>
+        </div>
+      </div>
+      <button class="btn-paper-run" id="btn-run-paper-blogger">
+        <span>⚡ 今日の論文からブログを自動生成</span>
+        <div class="loader-spinner" id="paper-blogger-loader"></div>
+      </button>
+    </div>
+
     <!-- Preset Selector -->
     <div class="preset-bar">
       <span class="preset-label">プリセット:</span>
@@ -134,6 +149,27 @@
     <p>Powered by <a href="https://typesafe.ai" target="_blank">TypeSafe AI</a> · Jev Model</p>
   </footer>
 
-  <script src="app.js?v=20260919"></script>
+  <!-- Paper Blog Modal -->
+  <div class="modal-overlay" id="paper-modal" style="display: none;">
+    <div class="modal-content paper-modal-content">
+      <div class="modal-header">
+        <h3><span>📝</span> arXiv 自動生成ブログ記事</h3>
+        <button class="btn-close-modal" id="btn-close-paper-modal">✕</button>
+      </div>
+      <div class="modal-sub-info" id="paper-modal-meta"></div>
+      <div class="modal-body paper-modal-body">
+        <pre class="paper-markdown-view" id="paper-modal-content"></pre>
+      </div>
+      <div class="modal-footer">
+        <span id="paper-saved-path" style="font-size: 11px; color: var(--text-dim);"></span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-primary" id="btn-copy-paper-blog">📋 全文コピー</button>
+          <button class="btn-text" id="btn-apply-to-editor">📝 入力欄に読み込む</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260919_2"></script>
 </body>
 </html>

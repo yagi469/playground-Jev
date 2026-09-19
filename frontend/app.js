@@ -688,5 +688,71 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+// arXiv × Jev × Gemini 自動論文ブロガー
+const btnRunPaperBlogger = document.getElementById("btn-run-paper-blogger");
+const paperBloggerLoader = document.getElementById("paper-blogger-loader");
+const paperModal = document.getElementById("paper-modal");
+const btnClosePaperModal = document.getElementById("btn-close-paper-modal");
+const paperModalContent = document.getElementById("paper-modal-content");
+const paperModalMeta = document.getElementById("paper-modal-meta");
+const paperSavedPath = document.getElementById("paper-saved-path");
+const btnCopyPaperBlog = document.getElementById("btn-copy-paper-blog");
+const btnApplyToEditor = document.getElementById("btn-apply-to-editor");
+
+if (btnRunPaperBlogger) {
+  btnRunPaperBlogger.addEventListener("click", async () => {
+    btnRunPaperBlogger.disabled = true;
+    paperBloggerLoader.style.display = "block";
+    btnRunPaperBlogger.querySelector("span").textContent = "arXiv取得 & Jev選定中...";
+
+    try {
+      const res = await safeFetchJson("/api/daily_paper_blog?max_papers=10", {
+        method: "POST",
+      });
+
+      if (res.status === "success") {
+        paperModalMeta.textContent = `📄 ${res.filename} · Jevによる多面スクリーニング & Gemini 執筆完了`;
+        paperModalContent.textContent = res.content;
+        paperSavedPath.textContent = `保存先: ${res.file_path}`;
+        paperModal.style.display = "flex";
+      } else {
+        alert("生成に失敗しました: " + (res.detail || "不明なエラー"));
+      }
+    } catch (err) {
+      console.error(err);
+      alert("論文ブログ生成エラー: " + err.message);
+    } finally {
+      btnRunPaperBlogger.disabled = false;
+      paperBloggerLoader.style.display = "none";
+      btnRunPaperBlogger.querySelector("span").textContent = "⚡ 今日の論文からブログを自動生成";
+    }
+  });
+}
+
+if (btnClosePaperModal) {
+  btnClosePaperModal.addEventListener("click", () => {
+    paperModal.style.display = "none";
+  });
+}
+
+if (btnCopyPaperBlog) {
+  btnCopyPaperBlog.addEventListener("click", () => {
+    navigator.clipboard.writeText(paperModalContent.textContent).then(() => {
+      btnCopyPaperBlog.textContent = "✓ コピー完了！";
+      setTimeout(() => { btnCopyPaperBlog.textContent = "📋 全文コピー"; }, 2000);
+    });
+  });
+}
+
+if (btnApplyToEditor) {
+  btnApplyToEditor.addEventListener("click", () => {
+    stateInputEl.value = paperModalContent.textContent;
+    paperModal.style.display = "none";
+    stateInputEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    stateInputEl.style.borderColor = "var(--accent-emerald)";
+    setTimeout(() => { stateInputEl.style.borderColor = ""; }, 2500);
+  });
+}
+
 // 起動
 init();

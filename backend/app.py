@@ -588,6 +588,55 @@ System One AI (Jev) による高速な客観診断によって、以下の文章
     }
 
 
+@app.post("/api/daily_paper_blog")
+def api_daily_paper_blog(max_papers: int = 10):
+    """
+    arXiv (hep-th / quant-ph) から最新論文を取得し、
+    Jev による選定 & Gemini による本格ブログ記事執筆を実行
+    """
+    try:
+        from daily_paper_blogger import run_daily_pipeline
+        file_path = run_daily_pipeline(max_papers=max_papers)
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=500, detail="ブログ記事の生成に失敗しました。")
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        filename = os.path.basename(file_path)
+        return {
+            "status": "success",
+            "filename": filename,
+            "file_path": file_path,
+            "content": content,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"論文ブログ生成エラー: {str(e)}")
+
+
+@app.get("/api/latest_paper_blog")
+def api_get_latest_paper_blog():
+    """最近生成された論文ブログ記事を取得"""
+    posts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "generated_posts")
+    if not os.path.exists(posts_dir):
+        return {"status": "none", "message": "まだ生成された記事がありません。"}
+
+    files = [os.path.join(posts_dir, f) for f in os.listdir(posts_dir) if f.endswith(".md")]
+    if not files:
+        return {"status": "none", "message": "まだ生成された記事がありません。"}
+
+    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    latest_file = files[0]
+    with open(latest_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    return {
+        "status": "success",
+        "filename": os.path.basename(latest_file),
+        "content": content,
+    }
+
+
 # 静的ファイルの配信
 frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
 if os.path.exists(frontend_dir):
