@@ -6,6 +6,21 @@ on:
     - cron: '0 23 * * *'
   workflow_dispatch:
     inputs:
+      file_path:
+        description: 'ローカルファイルパス (例: docs/textbook.pdf または notes.md)'
+        required: false
+        default: ''
+        type: string
+      pages:
+        description: 'PDFの対象ページ範囲 (例: 15-30, 45)'
+        required: false
+        default: ''
+        type: string
+      chapter:
+        description: 'フォーカスする章やテーマ (例: Chapter 3: Supersymmetry)'
+        required: false
+        default: ''
+        type: string
       arxiv_id:
         description: '指定するarXiv論文番号 (例: 2006.13892)。空欄なら自動スクリーニング'
         required: false
@@ -57,8 +72,22 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YAGIBRARY_POSTS_DIR: ${{ github.workspace }}/yagibrary/src/content/posts
         run: |
+          FILE_PATH="${{ github.event.inputs.file_path }}"
           ARXIV_ID="${{ github.event.inputs.arxiv_id }}"
-          if [ -n "$ARXIV_ID" ]; then
+          PAGES="${{ github.event.inputs.pages }}"
+          CHAPTER="${{ github.event.inputs.chapter }}"
+
+          if [ -n "$FILE_PATH" ]; then
+            echo "📖 Document mode: File = $FILE_PATH, Pages = $PAGES, Chapter = $CHAPTER"
+            CMD="python daily_paper_blogger.py --file \"$FILE_PATH\""
+            if [ -n "$PAGES" ]; then
+              CMD="$CMD --pages \"$PAGES\""
+            fi
+            if [ -n "$CHAPTER" ]; then
+              CMD="$CMD --chapter \"$CHAPTER\""
+            fi
+            eval $CMD
+          elif [ -n "$ARXIV_ID" ]; then
             echo "🎯 Targeted paper mode: arXiv ID = $ARXIV_ID"
             python daily_paper_blogger.py --arxiv-id "$ARXIV_ID"
           else
@@ -77,7 +106,7 @@ jobs:
           if [ -n "$(git status --porcelain src/content/posts)" ]; then
             git add src/content/posts
             TODAY=$(date +'%Y-%m-%d')
-            git commit -m "post: auto-generate daily arXiv top papers for ${TODAY}"
+            git commit -m "post: auto-generate blog article for ${TODAY}"
             git push origin master
             echo "✅ Successfully pushed new articles to yagibrary! This triggers deploy.yml on yagibrary."
           else

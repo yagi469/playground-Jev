@@ -8,6 +8,7 @@ Google Gemini で独自の考察・スタンスを盛り込んだブログ解説
 """
 
 import os
+import io
 import time
 import json
 import xml.etree.ElementTree as ET
@@ -19,6 +20,12 @@ from bs4 import BeautifulSoup
 import yaml
 from dotenv import load_dotenv
 from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
+
+try:
+    from pypdf import PdfReader, PdfWriter
+except ImportError:
+    PdfReader = None
+    PdfWriter = None
 
 # 環境変数の読み込み
 load_dotenv(".env.local")
@@ -1202,10 +1209,612 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
     return generated_files
 
 
+# ==============================================================================
+# ローカルファイル（PDF / Markdown）処理パイプライン
+# ==============================================================================
+def resolve_document_path(file_path: str) -> str:
+    """ローカルファイルパスを解決する（カレント、yagibrary、docs等を自動探索）"""
+    candidates = [
+        os.path.abspath(file_path),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), file_path)),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../yagibrary", file_path)),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../yagibrary/docs", file_path)),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "docs", file_path)),
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.path.isfile(c):
+            return c
+    raise FileNotFoundError(f"指定されたファイルが見つかりませんでした: '{file_path}'. 探索候補: {candidates}")
+
+
+def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> Tuple[bytes, str]:
+    """
+    指定された PDF ファイルから指定ページ範囲を抽出してバイナリ (bytes) とラベルを返す。
+    pages_str 例: "15-30", "45", "1-10,15,20-25" (1-indexed)。
+    """
+    if PdfReader is None or PdfWriter is None:
+        raise ImportError("pypdf がインストールされていません。'pip install pypdf' を実行してください。")
+
+    reader = PdfReader(pdf_path)
+    total_pages = len(reader.pages)
+    if total_pages == 0:
+        raise ValueError(f"PDFファイルにページが存在しません: {pdf_path}")
+
+    writer = PdfWriter()
+    selected_indices = set()
+
+    if pages_str and pages_str.strip():
+        parts = pages_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                s_str, e_str = part.split("-", 1)
+                start = max(1, int(s_str.strip())) - 1
+                end = min(total_pages, int(e_str.strip())) - 1
+                for idx in range(start, end + 1):
+                    selected_indices.add(idx)
+            else:
+                idx = int(part) - 1
+                if 0 <= idx < total_pages:
+                    selected_indices.add(idx)
+
+        sorted_indices = sorted(list(selected_indices))
+        if not sorted_indices:
+            raise ValueError(f"指定されたページ範囲 '{pages_str}' に有効なページが含まれていません (全 {total_pages} ページ)。")
+
+        for idx in sorted_indices:
+            writer.add_page(reader.pages[idx])
+
+        label = f"p.{pages_str} (計 {len(sorted_indices)} ページ / 全 {total_pages} ページ)"
+    else:
+        # ページ指定なしの場合、上限80ページを抽出
+        max_default = 80
+        count = min(total_pages, max_default)
+        for idx in range(count):
+            writer.add_page(reader.pages[idx])
+        if total_pages > max_default:
+            label = f"先頭 1-{max_default} ページ (全 {total_pages} ページ中)"
+        else:
+            label = f"全 {total_pages} ページ"
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    pdf_bytes = buf.getvalue()
+    return pdf_bytes, label
+
+
+def load_and_process_local_file(
+    file_path: str,
+    pages_str: Optional[str] = None,
+    chapter_hint: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    ローカルの PDF または Markdown / Text ファイルを読み込み、Gemini 用のコンテンツオブジェクトと
+    基本メタデータ（タイトル・要約・サブ領域など）を構造化して返す。
+    """
+    global gemini_client
+    if gemini_client is None:
+        init_gemini_client()
+
+    resolved_path = resolve_document_path(file_path)
+    file_name = os.path.basename(resolved_path)
+    ext = os.path.splitext(file_name)[-1].lower()
+
+    print(f"\n📂 [ローカルファイル読解] ファイル: {resolved_path} (拡張子: {ext})")
+    if chapter_hint:
+        print(f"   🎯 対象章/テーマ: {chapter_hint}")
+
+    doc_info: Dict[str, Any] = {
+        "file_path": resolved_path,
+        "file_name": file_name,
+        "extension": ext,
+        "chapter_hint": chapter_hint or "",
+        "page_label": "",
+    }
+
+    if ext == ".pdf":
+        from google.genai import types
+        pdf_bytes, page_label = extract_pdf_pages_bytes(resolved_path, pages_str)
+        doc_info["page_label"] = page_label
+        doc_info["pdf_part"] = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+        doc_info["doc_type"] = "pdf"
+        print(f"   📑 PDF 抽出完了: {page_label} ({len(pdf_bytes):,} bytes)")
+
+        # Gemini に基本メタデータの抽出を依頼
+        meta_prompt = f"""添付のPDFドキュメント（抽出範囲: {page_label}、指定テーマ/章: {chapter_hint or '指定なし'}）の内容を読み取り、
+以下のJSON形式でメタデータを出力してください。Markdownの```json ... ```形式で囲んでください。
+{{
+  "title": "このドキュメントまたは対象セクションの的確なタイトル（日本語または英語の原題）",
+  "authors": ["著者名または編者名（判明する場合）"],
+  "summary": "このドキュメント/対象セクションで論じられている核心内容の要約（150〜250文字）",
+  "categories": ["数理物理", "場の量子論", "その他関連分野タグ3個程度"],
+  "subfield": "SCFT, AdS/CFT, カイラル代数, 非摂動QFT など具体的な専門分野"
+}}
+"""
+        try:
+            res = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=[doc_info["pdf_part"], meta_prompt]
+            )
+            raw_text = res.text
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if json_match:
+                meta = json.loads(json_match.group(1))
+            else:
+                meta = json.loads(raw_text.strip())
+        except Exception as e:
+            print(f"   ⚠️ メタデータ抽出フォールバック: {e}")
+            meta = {
+                "title": os.path.splitext(file_name)[0],
+                "authors": ["著者不明"],
+                "summary": f"{file_name} の抜粋解説（{page_label}）。",
+                "categories": ["数理物理", "理論物理"],
+                "subfield": "数理物理学",
+            }
+
+        doc_info.update(meta)
+
+    elif ext in [".md", ".markdown", ".txt"]:
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            text_content = f.read()
+
+        doc_info["doc_type"] = "markdown"
+        doc_info["text_content"] = text_content
+        doc_info["page_label"] = f"テキストファイル ({len(text_content):,} 文字)"
+        print(f"   📝 Markdown 読込完了: {len(text_content):,} 文字")
+
+        meta_prompt = f"""以下のテキスト文書（指定テーマ/章: {chapter_hint or '指定なし'}）を読み取り、
+以下のJSON形式でメタデータを出力してください。Markdownの```json ... ```形式で囲んでください。
+{{
+  "title": "この文書の的確なタイトル",
+  "authors": ["著者名（判明する場合）"],
+  "summary": "この文書の核心内容の要約（150〜250文字）",
+  "categories": ["数理物理", "場の量子論", "その他関連分野タグ3個程度"],
+  "subfield": "SCFT, AdS/CFT, カイラル代数, 非摂動QFT など具体的な専門分野"
+}}
+
+【文書本文（先頭抜粋）】
+{text_content[:8000]}
+"""
+        try:
+            res = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=meta_prompt
+            )
+            raw_text = res.text
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if json_match:
+                meta = json.loads(json_match.group(1))
+            else:
+                meta = json.loads(raw_text.strip())
+        except Exception as e:
+            print(f"   ⚠️ メタデータ抽出フォールバック: {e}")
+            meta = {
+                "title": os.path.splitext(file_name)[0],
+                "authors": ["記録者"],
+                "summary": f"{file_name} の解説ノート。",
+                "categories": ["数理物理", "研究ノート"],
+                "subfield": "数理物理学",
+            }
+
+        doc_info.update(meta)
+    else:
+        raise ValueError(f"未対応のファイル形式です: {ext} (対応: .pdf, .md, .markdown, .txt)")
+
+    print(f"   🏷️ 認識タイトル: {doc_info.get('title')}")
+    print(f"   🏷️ 専門サブ領域: {doc_info.get('subfield')}")
+    return doc_info
+
+
+def write_blog_post_from_doc_with_gemini(doc_info: Dict[str, Any]) -> str:
+    """
+    PDF または Markdown の内容から、Gemini で本格的な数理物理ブログ記事（初稿）を執筆
+    """
+    global gemini_client
+    if gemini_client is None:
+        init_gemini_client()
+
+    print(f"\n✍️ [Gemini 執筆] '{doc_info['title']}' の解説ブログ記事を自律生成中...")
+
+    chapter_focus = f"- フォーカスする章・テーマ: {doc_info['chapter_hint']}\n" if doc_info.get("chapter_hint") else ""
+    page_focus = f"- 抽出範囲: {doc_info['page_label']}\n" if doc_info.get("page_label") else ""
+
+    prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
+読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
+安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理・数理構造の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
+
+【取り上げるドキュメント情報】
+- 文書名: {doc_info['file_name']}
+- タイトル: {doc_info['title']}
+- 著者/編者: {', '.join(doc_info.get('authors', ['-']))}
+- 分野/カテゴリ: {', '.join(doc_info.get('categories', ['数理物理']))}
+- 専門領域: {doc_info.get('subfield', '数理物理学')}
+{page_focus}{chapter_focus}- 概要:
+{doc_info.get('summary', '')}
+
+---
+【記事の構成とフォーマット規則】
+1. **フロントマター（YAML Frontmatter）を記事先頭に必ず出力してください**:
+---
+title: "思わずクリックしたくなる、知的好奇心と物理的本質を突いた日本語タイトル"
+summary: "120〜180文字程度の魅力的な記事要約（何が論じられ、なぜ物理・数理として美しいのかが伝わる文章）"
+tags:
+  - 物理学
+  - （ドキュメント内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用。例: 素粒子論, 超共形場理論, AdS-CFT, カイラル代数, 超弦理論, TQFTなど）
+---
+
+2. **太字・強調ルールの遵守（最重要）**:
+   - ブログ記事内でテキストを太字・強調する場合は、Markdownの ** 記法ではなく、必ず HTMLの <strong> タグ（例: <strong>太字テキスト</strong>）を使用してください。
+
+3. **本文の見出し構成**:
+   - 本文の開始部分に「# タイトル」を置かないでください（フロントマターのtitleがWebサイト側で自動描画されるため）。
+   - 本文の見出しは「## （見出し名）」から始めてください。
+   - 以下の構成で執筆してください：
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{doc_info['title']}』{' - ' + doc_info['chapter_hint'] if doc_info.get('chapter_hint') else ''}）について言及してください。
+     - ## 背景にある物理・数学の壁: 従来の枠組みの何が未解決だったのか、なぜこの理論・概念が本質的なのかを論理的かつクリアに解説。
+     - ## 核心アイデアと数理的機構: 著者がどのようなアイデア・数理構造（対称性、代数、幾何学的配位、双対性など）を展開しているかを解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・ツッコミ）単なる要約で終わらせず、数理物理・非摂動QFT・超対称性の視点から「ここが美しい」「この仮定・手法はどこまで拡張可能か？」「今後の研究・学習における位置づけ」など、研究者としての骨太なオピニオンを展開。
+     - ## まとめ ＆ 参考文献・関連情報: 記事の総括と、文献情報（ファイル名: {doc_info['file_name']}、{doc_info['page_label']}）を分かりやすくリスト形式で設置してください。
+
+4. **数式ブロック（Display Math）の改行ルール**:
+   - 独立したブロック数式（$$ ... $$）を出力する際は、インラインとして折り返されるのを防ぎ横スライド（スクロール）可能にするため、必ず前後に改行を入れて $$ を独立した行に配置してください：
+     $$
+     数式
+     $$
+
+Markdown形式で出力してください。
+"""
+
+    if doc_info["doc_type"] == "pdf":
+        contents = [doc_info["pdf_part"], prompt]
+    else:
+        text_body = doc_info.get("text_content", "")[:35000]
+        contents = [f"【ドキュメント本文】\n{text_body}\n\n", prompt]
+
+    candidate_models = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+    ]
+    post_text = None
+    for model_name in candidate_models:
+        try:
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+            )
+            post_text = response.text
+            print(f"  ✓ Gemini 執筆完了 (モデル: {model_name})")
+            break
+        except Exception as e:
+            print(f"  ⚠️ {model_name} でのエラー: {e}")
+
+    if not post_text:
+        raise RuntimeError("Gemini による執筆に失敗しました。")
+
+    return post_text
+
+
+def rewrite_doc_blog_post_with_gemini(
+    doc_info: Dict[str, Any],
+    previous_draft: str,
+    feedback_metrics: Dict[str, Any],
+    revision_round: int,
+) -> str:
+    """Jev のフィードバックに基づきドキュメント解説記事を再推敲"""
+    global gemini_client
+    if gemini_client is None:
+        init_gemini_client()
+
+    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバックを反映してドキュメント記事を再推敲中...")
+
+    diagnosis = feedback_metrics.get("diagnosis", "")
+    focus_instructions = []
+
+    if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+        focus_instructions.append(
+            "- 【最重要：数理的機構の具体化】抽象的な表現やお茶濁しを排除し、具体的な数学的・物理的機構"
+            "（対称性、不変量、代数構造、指数の厳密計算、幾何学的性質など）がどう論理的に機能しているのかを明快に解説してください。"
+        )
+
+    if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+        focus_instructions.append(
+            "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションを強化してください。"
+            "当たり障りのない要約を脱し、「どの数理的帰結が最も美しいか」「どのような意義や限界があるか」を熱量高く論じてください。"
+        )
+
+    if diagnosis == "avoid_shallow_metaphors":
+        focus_instructions.append(
+            "- 【日常比喩の排除】子供騙しの日常たとえ話を完全排除し、数理美そのもので読者を引き込んでください。"
+        )
+
+    if not focus_instructions:
+        focus_instructions.append(
+            "- 前回のドラフト全体の論理のキレと筆者の独自スタンスをさらに研ぎ澄ましてください。"
+        )
+
+    focus_text = "\n".join(focus_instructions)
+
+    rewrite_prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造の最前線を探究する理論物理学者兼サイエンスブロガーです。
+
+先ほどあなたが執筆したブログ記事ドラフトに対し、Jev System One 診断システムから以下の品質診断スコアと改善要求が届きました。
+
+【Jev による前稿（第{revision_round - 1}稿）の診断結果】
+- 数理・理論の具体性スコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
+- 筆者オピニオン度スコア: {feedback_metrics.get('stance', 0.0):.2f} / 3.0
+- 知的好奇心刺激度スコア: {feedback_metrics.get('appeal', 0.0):.2f} / 3.0
+- 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0 （基準未達・改善要）
+- 指摘されたボトルネック: {diagnosis}
+- 「あなたの意見は？」肩透かしリスク: {feedback_metrics.get('lack_of_opinion_risk', 0.0)*100:.1f}%
+
+【今回のリライトにおける必須改善指令】
+{focus_text}
+
+---
+【対象ドキュメント情報】
+- 文書名: {doc_info['file_name']}
+- タイトル: {doc_info['title']}
+- 対象範囲: {doc_info.get('page_label', '')} / {doc_info.get('chapter_hint', '')}
+
+---
+【前回のドラフト】
+{previous_draft}
+
+---
+【フォーマット再確認】
+1. フロントマター（YAML）を必ず先頭に出力
+2. テキストの太字は必ず HTMLの <strong>太字</strong> タグを使用（Markdownの ** は禁止）
+3. 本文開始に「# タイトル」を置かない（## 見出しから開始）
+4. 独立行数式は必ず前後に改行を入れて $$ を独立行に配置（\n\n$$\n式\n$$\n\n）
+
+以上の指示に従い、圧倒的クオリティへと生まれ変わった完全版 Markdown 記事を出力してください。
+"""
+
+    if doc_info["doc_type"] == "pdf":
+        contents = [doc_info["pdf_part"], rewrite_prompt]
+    else:
+        text_body = doc_info.get("text_content", "")[:35000]
+        contents = [f"【ドキュメント本文】\n{text_body}\n\n", rewrite_prompt]
+
+    candidate_models = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+    ]
+    post_text = None
+    for model_name in candidate_models:
+        try:
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+            )
+            post_text = response.text
+            print(f"  ✓ Gemini リライト完了 (モデル: {model_name})")
+            break
+        except Exception as e:
+            print(f"  ⚠️ {model_name} でのエラー: {e}")
+
+    if not post_text:
+        raise RuntimeError("Gemini によるリライトに失敗しました。")
+
+    return post_text
+
+
+def generate_refined_doc_blog_post(
+    doc_info: Dict[str, Any],
+    max_revisions: int = 2,
+) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
+    """Gemini 執筆 ➡️ Jev 診断 ➡️ 必要に応じ Gemini リライトの自律推敲ループ"""
+    # 1. 初稿執筆
+    current_draft = write_blog_post_from_doc_with_gemini(doc_info)
+
+    history = []
+    # 2. 初稿の品質検証
+    quality = verify_post_with_jev(current_draft, round_num=1)
+    history.append(quality)
+
+    revision_round = 1
+    while not quality["passed"] and revision_round <= max_revisions:
+        revision_round += 1
+        print(f"\n⚡ [推敲ループ] 第{revision_round - 1}稿は品質基準未達のため、Jevの指摘を反映して再推敲を実行します (Round {revision_round})")
+
+        try:
+            current_draft = rewrite_doc_blog_post_with_gemini(
+                doc_info=doc_info,
+                previous_draft=current_draft,
+                feedback_metrics=quality,
+                revision_round=revision_round,
+            )
+            quality = verify_post_with_jev(current_draft, round_num=revision_round)
+            history.append(quality)
+        except Exception as e:
+            print(f"⚠️ リライト中にエラーが発生したため、前回のドラフトを採用します: {e}")
+            break
+
+    if quality["passed"]:
+        print(f" ✨ Jev 品質基準を見事クリアしました！（総合スコア: {quality['total_score']:.2f}点）")
+    else:
+        print(f" ⚠️ リビジョン上限（{max_revisions}回）に達したため、現時点での最高推敲版を採用します。")
+
+    return current_draft, quality, history
+
+
+def format_doc_post_for_yagibrary(
+    raw_markdown: str,
+    doc_info: Dict[str, Any],
+    quality: Dict[str, Any],
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """yagibrary (Astro) の形式に合わせて整形し、Frontmatter と Jev 診断レポートを付加"""
+    frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
+    parsed_meta = {}
+    body = raw_markdown.strip()
+
+    if frontmatter_match:
+        yaml_content = frontmatter_match.group(1)
+        body = frontmatter_match.group(2).strip()
+        try:
+            parsed_meta = yaml.safe_load(yaml_content) or {}
+        except Exception as e:
+            print(f"⚠️ Frontmatter YAML パース失敗: {e}")
+
+    title = parsed_meta.get("title")
+    if not title:
+        h1_match = re.match(r"^#\s+(.+)$", body, re.MULTILINE)
+        if h1_match:
+            title = h1_match.group(1).strip()
+            body = re.sub(r"^#\s+.+\n*", "", body, count=1).strip()
+        else:
+            title = f"【文献解説】{doc_info['title']}"
+
+    body = re.sub(r"^#\s+.*?\n+", "", body).strip()
+
+    summary = parsed_meta.get("summary")
+    if not summary:
+        summary = f"『{doc_info['title']}』の解説記事。数理物理の深層と独自のオピニオンを交えて紐解きます。"
+
+    tags = parsed_meta.get("tags")
+    if not tags or not isinstance(tags, list):
+        tags = ["物理学", "数理物理", doc_info.get("subfield", "理論物理")]
+
+    cleaned_tags = []
+    for t in tags:
+        t_clean = str(t).strip().replace('/', '-').replace('\\', '-').replace(':', '-')
+        if t_clean and t_clean not in cleaned_tags:
+            cleaned_tags.append(t_clean)
+
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+
+    # 本文中の **太字** を <strong>太字</strong> に変換 (AGENTS.mdルール)
+    body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
+
+    # 独立数式ブロックの正規化
+    body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
+
+    # 推敲改善履歴
+    revision_count = len(history) if history else 1
+    history_steps = []
+    if history:
+        for h in history:
+            round_lbl = f"第{h.get('round', 1)}稿"
+            score_lbl = f"{h.get('total_score', 0):.2f}点"
+            status_lbl = "合格" if h.get("passed") else f"足切り ({h.get('diagnosis', '要改善')})"
+            history_steps.append(f"{round_lbl}: {score_lbl} [{status_lbl}]")
+    history_summary = " ➡️ ".join(history_steps) if history_steps else f"{quality.get('total_score', 0):.2f}点"
+
+    chapter_info = f"- <strong>対象章・セクション</strong>: {doc_info['chapter_hint']}\n" if doc_info.get("chapter_hint") else ""
+    meta_section = f"""
+
+---
+
+### 📊 本日の自律型 AI ドキュメント解析レポート
+- <strong>解析対象</strong>: <code>{doc_info['file_name']}</code> ({doc_info.get('page_label', '全編')})
+{chapter_info}- <strong>Jev 記事品質推敲（Evaluator-Optimizer）</strong>:
+  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 9.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
+  - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
+  - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
+  - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
+  - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
+  - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
+"""
+
+    frontmatter_dict = {
+        "title": title,
+        "date": now_jst,
+        "summary": summary,
+        "tags": cleaned_tags,
+    }
+
+    frontmatter_yaml = yaml.dump(
+        frontmatter_dict,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False
+    ).strip()
+
+    return f"---\n{frontmatter_yaml}\n---\n\n{body}\n{meta_section}"
+
+
+def run_file_pipeline(
+    file_path: str,
+    pages: Optional[str] = None,
+    chapter: Optional[str] = None,
+    output_dir: Optional[str] = None
+) -> List[str]:
+    """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
+    print("\n" + "=" * 65)
+    print(" 📖 Local Document × TypeSafe Jev × Gemini ドキュメントブロガー 起動")
+    print(f" 📂 指定ファイル: {file_path}")
+    if pages:
+        print(f" 📑 指定ページ: {pages}")
+    if chapter:
+        print(f" 🎯 指定章/テーマ: {chapter}")
+    print("=" * 65)
+
+    if output_dir is None:
+        if os.path.exists(DEFAULT_YAGIBRARY_POSTS_DIR):
+            target_dir = DEFAULT_YAGIBRARY_POSTS_DIR
+        else:
+            target_dir = os.path.join(os.path.dirname(__file__), "generated_posts")
+    else:
+        target_dir = output_dir
+
+    os.makedirs(target_dir, exist_ok=True)
+
+    # 1. ファイル読込 & メタデータ抽出
+    doc_info = load_and_process_local_file(file_path, pages_str=pages, chapter_hint=chapter)
+
+    # 2. 自律執筆 ＆ Jev推敲ループ
+    raw_markdown, quality, history = generate_refined_doc_blog_post(doc_info, max_revisions=2)
+
+    # 3. Astro 向け整形
+    final_post = format_doc_post_for_yagibrary(raw_markdown, doc_info, quality, history=history)
+
+    # 4. ファイル名生成 & 保存
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    base_name = os.path.splitext(doc_info["file_name"])[0]
+    # ファイル名用の安全なスラッグ
+    safe_slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", base_name).strip("-").lower()
+    if not safe_slug:
+        safe_slug = "doc-note"
+
+    if chapter:
+        safe_ch = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chapter).strip("-").lower()[:20]
+        if safe_ch:
+            safe_slug = f"{safe_slug}-{safe_ch}"
+
+    filename = f"{today_str}-{safe_slug}.md"
+    out_file_path = os.path.join(target_dir, filename)
+
+    # 重複がある場合はインデックスを付与
+    counter = 1
+    while os.path.exists(out_file_path):
+        filename = f"{today_str}-{safe_slug}-{counter}.md"
+        out_file_path = os.path.join(target_dir, filename)
+        counter += 1
+
+    with open(out_file_path, "w", encoding="utf-8") as f:
+        f.write(final_post)
+
+    print("\n" + "=" * 65)
+    print(f" 🎉 ドキュメント解説記事の生成・保存が完了しました！")
+    print(f"    保存先: {out_file_path}")
+    print("=" * 65)
+    return [out_file_path]
+
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="arXiv × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
+    parser = argparse.ArgumentParser(description="arXiv / Document × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
     parser.add_argument("--arxiv-id", "-a", type=str, default="", help="特定の arXiv 論文番号（カンマ区切りで複数可。例: 2006.13892）")
+    parser.add_argument("--file", "-f", type=str, default="", help="ローカルのPDFまたはMarkdownファイルパス（例: docs/quantum_field_theory.pdf）")
+    parser.add_argument("--pages", "-p", type=str, default="", help="PDFの対象ページ範囲（例: 15-30, 45）")
+    parser.add_argument("--chapter", "-c", type=str, default="", help="フォーカスしたい章やテーマ（例: 'Chapter 3: Supersymmetry'）")
     parser.add_argument("--max-papers", "-m", type=int, default=15, help="arXivから自動取得する件数 (デフォルト: 15)")
     parser.add_argument("--top-n", "-n", type=int, default=3, help="ブログ記事化する上位件数 (デフォルト: 3)")
     parser.add_argument("--output-dir", "-o", type=str, default=None, help="記事保存先ディレクトリ")
@@ -1222,11 +1831,20 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
-    if args.arxiv_id.strip():
+    if args.file.strip():
+        # ローカルファイル（PDF/MD）指定モード
+        run_file_pipeline(
+            file_path=args.file.strip(),
+            pages=args.pages.strip() or None,
+            chapter=args.chapter.strip() or None,
+            output_dir=args.output_dir
+        )
+    elif args.arxiv_id.strip():
         # 特定論文指定モード
         target_ids = [aid.strip() for aid in args.arxiv_id.split(",") if aid.strip()]
         run_targeted_pipeline(arxiv_ids=target_ids, output_dir=args.output_dir)
     else:
         # 自動スクリーニングモード
         run_daily_pipeline(max_papers=args.max_papers, top_n_to_blog=args.top_n, output_dir=args.output_dir)
+
 
