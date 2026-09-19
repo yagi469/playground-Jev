@@ -99,32 +99,55 @@ def _parse_arxiv_xml(xml_text: str) -> List[Dict[str, Any]]:
     return papers
 
 
-def fetch_arxiv_papers(max_results: int = 25) -> List[Dict[str, Any]]:
+def fetch_arxiv_papers(max_results: int = 30) -> List[Dict[str, Any]]:
     """
-    hep-th (高エネルギー理論) と quant-ph (量子情報・量子物理) の最新論文を取得
+    hep-th (高エネルギー理論) と math-ph (数理物理) を最重要母集団とし、
+    quant-ph も含めてバランスよく最新論文を取得（特定カテゴリの過密を防止）
     """
-    print(f"\n📡 [arXiv API] hep-th & quant-ph から最新 {max_results} 件の論文を取得中...")
-    url = (
-        "https://export.arxiv.org/api/query?"
-        "search_query=cat:hep-th+OR+cat:quant-ph&"
-        "sortBy=submittedDate&sortOrder=descending&"
-        f"max_results={max_results}"
-    )
+    print(f"\n📡 [arXiv API] hep-th (最重要) & math-ph & quant-ph から最新論文を取得中...")
+
+    # カテゴリごとに分散取得して、quant-ph による圧迫を防止
+    hep_count = max(15, int(max_results * 0.6))
+    math_count = max(8, int(max_results * 0.25))
+    quant_count = max(7, int(max_results * 0.25))
+
+    queries = [
+        ("cat:hep-th", hep_count, "hep-th (高エネルギー理論)"),
+        ("cat:math-ph", math_count, "math-ph (数理物理)"),
+        ("cat:quant-ph", quant_count, "quant-ph (量子情報・物理)"),
+    ]
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/atom+xml",
     }
 
-    try:
-        response = httpx.get(url, headers=headers, timeout=25.0)
-        response.raise_for_status()
-        papers = _parse_arxiv_xml(response.text)
-        print(f"✅ {len(papers)} 件の論文メタデータを取得完了")
-        return papers
-    except Exception as e:
-        print(f"❌ arXiv API 取得失敗: {e}")
-        return []
+    all_papers = []
+    seen_ids = set()
+
+    for cat_query, count, label in queries:
+        url = (
+            "https://export.arxiv.org/api/query?"
+            f"search_query={cat_query}&"
+            "sortBy=submittedDate&sortOrder=descending&"
+            f"max_results={count}"
+        )
+        try:
+            response = httpx.get(url, headers=headers, timeout=25.0)
+            response.raise_for_status()
+            papers = _parse_arxiv_xml(response.text)
+            added = 0
+            for p in papers:
+                if p["arxiv_id"] not in seen_ids:
+                    seen_ids.add(p["arxiv_id"])
+                    all_papers.append(p)
+                    added += 1
+            print(f"  ✓ {label}: {added} 件取得")
+        except Exception as e:
+            print(f"  ⚠️ {label} 取得エラー: {e}")
+
+    print(f"✅ 合計 {len(all_papers)} 件の論文メタデータを収集完了")
+    return all_papers
 
 
 def fetch_arxiv_papers_by_ids(arxiv_ids: List[str]) -> List[Dict[str, Any]]:
@@ -185,30 +208,32 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
 
     # Jev への質問定義
     questions = {
-        # 1. 量子コンピュータ・量子情報・ホログラフィ領域への合致度
-        "is_quantum_relevant": Noul(
+        # 1. 数理物理・高エネルギー理論の核心領域への合致度
+        "is_math_physics_core": Noul(
             instructions=(
-                "この論文は、量子コンピュータ、量子情報、量子誤り訂正、"
-                "または高エネルギー理論との融合領域（AdS/CFTホログラフィ、量子エンタングルメント、"
-                "量子複雑性、テンソルネットワーク、ブラックホール量子情報など）に明確に関連していますか？"
+                "この論文は、場の量子論の厳密な数理構造、超対称共形場理論（SCFT）、"
+                "カイラル代数/頂点作用素代数 (VOA)、Dブレーン・超弦理論の幾何学、"
+                "トポロジカル場の量子論 (TQFT)、共形ブートストラップ、"
+                "あるいはAdS/CFT対応の厳密な数理・代数的側面に明確に関連していますか？"
+                "（単なる量子回路の実装や物性模型の数値シミュレーション、素粒子実験現象論ではなく、数理理論的深みがあるかを判定してください）"
             )
         ),
         # 2. ユーザー個人の興味・数理物理関心への合致度 (Google Drive文献プロファイル準拠)
         "user_interest_match": Score(
             instructions=(
                 f"ユーザーの興味基準に基づき、この論文がユーザーの研究的関心にどれだけマッチするか評価してください。\n"
-                f"【ユーザー関心基準】: {user_criteria if user_criteria else '超対称共形場理論、AdS/CFT、量子エンタングルメント、数理物理'}"
+                f"【ユーザー関心基準】: {user_criteria if user_criteria else '超対称共形場理論、カイラル代数、4d-2d対応、Dブレーン幾何、TQFT、数理物理'}"
             ),
             criteria=[
-                "全く関心外（単なる素粒子実験フィッティングや無関係な宇宙論モデルなど）",
-                "やや関連（量子情報の一般的応用など）",
-                "強くマッチ（ホログラフィ、テンソルネットワーク、量子多体、場の理論の数理的側面）",
-                "ドンピシャ（超対称場論、SCFT、4d-2d対応、Dブレーン幾何、AdS/CFTの厳密な量子情報対応）",
+                "全く関心外（素粒子実験フィッティング、単なる量子回路実装、物性模型の数値計算など）",
+                "やや関連（一般的な量子情報応用、ブラックホール熱力学の初歩的計算など）",
+                "強くマッチ（AdS/CFTの厳密幾何、高次対称性・TQFT、共形ブートストラップ、量子エンタングルメントの厳密代数）",
+                "ドンピシャ（超対称場論、SCFT、4d-2d対応、カイラル代数/頂点代数、Dブレーン幾何、BPS不変量、厳密解法）",
             ],
         ),
-        # 3. 理論的深さ・新規性
+        # 3. 理論的深さ・新規性（数理的厳密性）
         "theoretical_depth": Score(
-            instructions="この論文の理論的深さや数学・物理学的な新規性レベルを評価してください",
+            instructions="この論文の理論的深さや数学・物理学的な新規性・厳密性レベルを評価してください",
             criteria=[
                 "初歩的・既存のレビューや軽微な計算",
                 "標準的な応用や既存枠組み内の進展",
@@ -216,16 +241,16 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 "極めて重要な金字塔・パラダイムシフトの可能性を秘める",
             ],
         ),
-        # 4. ブログ読者への面白さ・話題性
+        # 4. ブログ読者への面白さ・知的好奇心の刺激度
         "blog_appeal": Score(
             instructions=(
-                "物理学や量子技術に関心を持つブログ読者にとって、"
-                "直感的に面白く、知的好奇心を刺激する話題性や魅力があるかを評価してください"
+                "数理物理学や理論物理に関心を持つ読者にとって、"
+                "知的好奇心を刺激する話題性や数理的美しさ・深みがあるかを評価してください"
             ),
             criteria=[
                 "地味・極端な専門家以外には伝わりにくい",
-                "普通・学術的価値はあるが一般の興味を惹きにくい",
-                "魅力的・直感的な比喩や概念で読者を惹きつけられる",
+                "普通・学術的価値はあるが一般の知的好奇心を惹きにくい",
+                "魅力的・物理的洞察や数理的エレガンスで読者を惹きつけられる",
                 "非常に魅力的・『これはすごい』と直感的に共有・議論したくなる",
             ],
         ),
@@ -233,17 +258,27 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
         "subfield": Choice(
             instructions="この論文が最も強くフォーカスしているサブ分野を分類してください",
             criteria={
-                "quantum_error_correction": "量子誤り訂正符号・フォールトトレラント量子計算 (FTQC)",
-                "holography_quantum_gravity": "ホログラフィ・AdS/CFT・ブラックホール量子情報・アイランド公式",
-                "scft_mathematical_physics": "超対称共形場理論 (SCFT)・カイラル代数・非摂動QFT・数理物理",
-                "quantum_complexity_algorithms": "量子計算複雑性・量子アルゴリズム・量子超越性",
-                "tensor_networks_manybody": "テンソルネットワーク・量子多体系・SYK模型・エンタングルメント相転移",
-                "other_unrelated": "量子情報や理論物理の数理構造とは無関係な現象論など",
+                "scft_chiral_algebra": "超対称共形場理論 (SCFT)・カイラル代数/VOA・4d/2d対応・超対称指数",
+                "string_d_brane_geometry": "超弦理論・Dブレーン幾何・非摂動的弦理論・BPS状態",
+                "tqft_generalized_symmetry": "トポロジカル場の量子論 (TQFT)・高次対称性・非可逆対称性",
+                "holography_bootstrap_exact": "AdS/CFT厳密ホログラフィ・共形ブートストラップ・代数的場の量子論",
+                "quantum_info_condensed_matter": "量子情報・量子計算・テンソルネットワーク・物性模型",
+                "phenomenology_or_unrelated": "素粒子実験現象論・単なる数値シミュレーション・関心外",
             },
         ),
     }
 
     start_t = time.time()
+
+    # サブ分野ごとの重み付け係数（ユーザーの本命分野を最優先）
+    subfield_multipliers = {
+        "scft_chiral_algebra": 1.4,         # ドンピシャ最優先
+        "string_d_brane_geometry": 1.3,     # 本命テーマ
+        "tqft_generalized_symmetry": 1.25,  # 強い関心
+        "holography_bootstrap_exact": 1.2,  # 理論的関心
+        "quantum_info_condensed_matter": 0.4, # 量子情報は低優先
+        "phenomenology_or_unrelated": 0.1,    # 現象論・数値計算は弾く
+    }
 
     for idx, p in enumerate(papers):
         # 論文テキスト（State）
@@ -255,20 +290,19 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 questions=questions,
             )
 
-            is_rel = res.nouls["is_quantum_relevant"].noul
+            is_core = res.nouls["is_math_physics_core"].noul
             u_match = res.scores["user_interest_match"].score
             t_depth = res.scores["theoretical_depth"].score
             b_appeal = res.scores["blog_appeal"].score
             s_field = res.choices["subfield"].choice
 
-            # 総合スコア計算
-            # 無関係カテゴリはペナルティ
-            penalty = 0.2 if s_field == "other_unrelated" else 1.0
-            # ユーザー興味マッチ度 (u_match) を強く重み付け (2.5)
-            total_score = ((is_rel * 2.5) + (u_match * 2.5) + (t_depth * 1.5) + (b_appeal * 2.0)) * penalty
+            # 総合スコア計算 (ユーザー興味 u_match を最重視)
+            multiplier = subfield_multipliers.get(s_field, 1.0)
+            total_score = ((is_core * 3.0) + (u_match * 3.5) + (t_depth * 2.0) + (b_appeal * 1.5)) * multiplier
 
             p["jev_metrics"] = {
-                "is_quantum_relevant": round(is_rel, 3),
+                "is_math_physics_core": round(is_core, 3),
+                "is_quantum_relevant": round(is_core, 3), # 後方互換
                 "user_interest_match": round(u_match, 3),
                 "theoretical_depth": round(t_depth, 3),
                 "blog_appeal": round(b_appeal, 3),
@@ -277,7 +311,7 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
             }
             scored_papers.append(p)
 
-            print(f"  [{idx+1}/{len(papers)}] {p['arxiv_id']} | 関連度: {is_rel:.1%} | 興味合致: {u_match:.2f}/3 | 深度: {t_depth:.1f} | 魅力: {b_appeal:.1f} | 分野: {s_field} | 総合: {total_score:.2f}")
+            print(f"  [{idx+1}/{len(papers)}] {p['arxiv_id']} | 数理物理核心: {is_core:.1%} | 興味合致: {u_match:.2f}/3 | 深度: {t_depth:.1f} | 分野: {s_field} | 総合: {total_score:.2f}")
 
         except Exception as e:
             print(f"  ⚠️ {p['arxiv_id']} のJev評価スキップ: {e}")
@@ -316,9 +350,9 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
         themes = ", ".join(user_profile.get("core_themes", []))
         user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論（ワインバーグ流の厳密性）、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理や非摂動的・対称性的観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
 
-    prompt = f"""あなたは数理物理学、量子情報理論、超弦理論（AdS/CFTなど）の最前線をわかりやすく発信する、一流の科学ブロガー兼研究者です。
+    prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
-あなた自身の独自の切り口・熱量・生々しい所感・直感的なたとえ話を交えた、ワクワクする魅力的なブログ記事を執筆してください。
+安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
 {user_perspective}
 【取り上げる論文情報】
 - arXiv ID: {paper['arxiv_id']}
@@ -331,21 +365,21 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
 {paper['summary']}
 
 【Jev System One による分析評価】
-- 量子情報・物理合致度: {m['is_quantum_relevant'] * 100:.1f}%
+- 数理物理核心度: {m.get('is_math_physics_core', m.get('is_quantum_relevant', 0.0)) * 100:.1f}%
 - ユーザー関心合致スコア: {m.get('user_interest_match', 0.0):.2f} / 3.0
 - 理論的深さスコア: {m['theoretical_depth']:.2f} / 3.0
-- ブログ話題性スコア: {m['blog_appeal']:.2f} / 3.0
+- ブログ知的好奇心スコア: {m['blog_appeal']:.2f} / 3.0
 - 専門領域: {m['subfield']}
 
 ---
 【記事の構成とフォーマット規則】
 1. **フロントマター（YAML Frontmatter）を記事先頭に必ず出力してください**:
 ---
-title: "思わずクリックしたくなるキャッチーな日本語タイトル"
-summary: "120〜180文字程度の魅力的な記事要約（何が解決し、なぜ面白いのかが伝わる文章）"
+title: "思わずクリックしたくなる、知的好奇心と物理的本質を突いた日本語タイトル"
+summary: "120〜180文字程度の魅力的な記事要約（何が解明され、なぜ物理として美しいのかが伝わる文章）"
 tags:
   - 物理学
-  - （論文内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用。例: 量子情報, ホログラフィ, 量子誤り訂正, AdS-CFTなど）
+  - （論文内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用。例: 素粒子論, 超共形場理論, AdS-CFT, カイラル代数, 超弦理論, TQFTなど）
 ---
 
 2. **太字・強調ルールの遵守（最重要）**:
@@ -355,10 +389,10 @@ tags:
    - 本文の開始部分に「# タイトル」を置かないでください（フロントマターのtitleがWebサイト側で自動描画されるため）。
    - 本文の見出しは「## （見出し名）」から始めてください。
    - 以下の構成で執筆してください：
-     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の興味を一気に引き込む導入。冒頭で対象論文へのリンク（[{paper['arxiv_id']}]({paper['url']})）およびタイトル・著者情報を必ず明記してください。
-     - ## 背景にある物理の壁: 専門知識がない人でもイメージできるように、身近な日常の比喩や直感的な概念を用いて背景を説明。
-     - ## この論文の核心アイデア: 数式を丸写しするのではなく「幾何学的な直感」や「量子回路的な直感」に翻訳して解説。
-     - ## で、私（筆者）はどう考えるか？: （最重要）「正直ここが面白い」「一方で、この仮定は成り立つのか？」など、筆者自身の率直なオピニオン・ツッコミを展開。
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象論文へのリンク（[{paper['arxiv_id']}]({paper['url']})）およびタイトル・著者情報を必ず明記してください。
+     - ## 背景にある物理・数学の壁: 従来の理論（摂動論、標準的場の理論、既存のホログラフィ等）の何が未解決だったのか、なぜこの問題が本質的なのかを論理的かつクリアに解説。
+     - ## この論文の核心アイデアと数理的機構: 著者がどのようなアイデア・数理構造（対称性、代数、幾何学的配位、双対性など）を用いてその壁を乗り越えたのかを解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・ツッコミ）単なる要約で終わらせず、数理物理・非摂動QFT・超対称性の視点から「ここが美しい」「この仮定はどこまで一般化できるのか？」「今後の研究の方向性」など、研究者としての骨太なオピニオンを展開。
      - ## まとめ ＆ 論文リンク: 記事の総括と、arXivアブストラクトへのリンク（[{paper['arxiv_id']}]({paper['url']})）、PDFへのリンク（[PDF]({paper['pdf_url']})）を分かりやすくリスト形式で設置してください。
 
 Markdown形式で出力してください。
@@ -578,7 +612,7 @@ def format_post_for_yagibrary(
 - <strong>選定元</strong>: [<a href="{paper['url']}" target="_blank" rel="noopener noreferrer">arXiv:{paper['arxiv_id']}</a>] / カテゴリ: {', '.join(paper['categories'])}
 - <strong>本日のランキング</strong>: 第{rank}位（総合スコア: <code>{paper['jev_metrics']['total_score']}</code>）
 - <strong>Jev スクリーニングスコア</strong>:
-  - 量子情報・物理合致度: <code>{paper['jev_metrics']['is_quantum_relevant']*100:.1f}%</code>
+  - 数理物理核心度: <code>{paper['jev_metrics'].get('is_math_physics_core', paper['jev_metrics'].get('is_quantum_relevant', 0.0))*100:.1f}%</code>
   - 理論的新規性・深度: <code>{paper['jev_metrics']['theoretical_depth']:.2f} / 3.0</code>
   - 話題性・アピール度: <code>{paper['jev_metrics']['blog_appeal']:.2f} / 3.0</code>
   - サブ領域: <code>{paper['jev_metrics']['subfield']}</code>
