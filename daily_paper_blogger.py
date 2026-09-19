@@ -12,10 +12,18 @@ import sys
 import time
 import json
 import xml.etree.ElementTree as ET
-from datetime import datetime
+import re
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 import httpx
+import yaml
 from dotenv import load_dotenv
+
+# yagibrary の posts ディレクトリ（デフォルト保存先）
+DEFAULT_YAGIBRARY_POSTS_DIR = os.getenv(
+    "YAGIBRARY_POSTS_DIR",
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts"))
+)
 
 # 環境変数の読み込み
 load_dotenv(".env.local")
@@ -304,22 +312,30 @@ def write_blog_post_with_gemini(paper: Dict[str, Any]) -> str:
 - 専門領域: {m['subfield']}
 
 ---
-【記事の構成と執筆ルール】
-1. **ブログタイトル**:
-   - 読者が思わずクリックしたくなる、知的好奇心を刺激するキャッチーな日本語タイトル（「# タイトル」で始める）。
-   - 難解な数式名だけでなく、「何が解決したのか」「なぜアツいのか」が直感的に伝わるタイトル。
-2. **導入（1行サマリー ＆ つかみ）**:
-   - 「この記事でわかること」を明確にし、読者の興味を一気に引き込む導入。
-3. **背景にある物理の壁（従来の何が困っていたのか）**:
-   - 専門知識がない人でもイメージできるように、身近な日常の比喩や直感的な概念を用いて背景を説明。
-4. **この論文の核心アイデア・何をやったのか**:
-   - 著者たちがどうやってその壁を乗り越えたのか。数式を丸写しするのではなく、「幾何学的な直感」や「量子回路的な直感」に翻訳して解説。
-5. **「で、私（筆者）はどう考えるか？」（★最重要：独自のスタンス・考察）**:
-   - 単なる解説で終わらせず、「正直ここが面白い」「一方で、この仮定は現実的なFTQC（またはAdS/CFT）で成り立つのか？」「今後の研究の方向性」など、筆者自身の率直なオピニオン・ツッコミを展開する。
-6. **まとめ ＆ 論文リンク**:
-   - 記事の総括と、arXivへのリンク、PDFリンク。
+【記事の構成とフォーマット規則】
+1. **フロントマター（YAML Frontmatter）を記事先頭に必ず出力してください**:
+---
+title: "思わずクリックしたくなるキャッチーな日本語タイトル"
+summary: "120〜180文字程度の魅力的な記事要約（何が解決し、なぜ面白いのかが伝わる文章）"
+tags:
+  - 物理学
+  - （論文内容に即したタグを3〜5個。例: 量子情報, ホログラフィ, 量子誤り訂正, AdS/CFTなど）
+---
 
-Markdown 形式（GitHub Flavored Markdown）で全文を出力してください。
+2. **太字・強調ルールの遵守（最重要）**:
+   - ブログ記事内でテキストを太字・強調する場合は、Markdownの ** 記法ではなく、必ず HTMLの <strong> タグ（例: <strong>太字テキスト</strong>）を使用してください。
+
+3. **本文の見出し構成**:
+   - 本文の開始部分に「# タイトル」を置かないでください（フロントマターのtitleがWebサイト側で自動描画されるため）。
+   - 本文の見出しは「## （見出し名）」から始めてください。
+   - 以下の構成で執筆してください：
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の興味を一気に引き込む導入。
+     - ## 背景にある物理の壁: 専門知識がない人でもイメージできるように、身近な日常の比喩や直感的な概念を用いて背景を説明。
+     - ## この論文の核心アイデア: 数式を丸写しするのではなく「幾何学的な直感」や「量子回路的な直感」に翻訳して解説。
+     - ## で、私（筆者）はどう考えるか？: （最重要）「正直ここが面白い」「一方で、この仮定は成り立つのか？」など、筆者自身の率直なオピニオン・ツッコミを展開。
+     - ## まとめ ＆ 論文リンク: 記事の総括と、arXivへのリンク、PDFリンク。
+
+Markdown形式で出力してください。
 """
 
     candidate_models = [
@@ -401,13 +417,124 @@ def verify_post_with_jev(post_content: str) -> Dict[str, Any]:
 
 
 # ==============================================================================
+# 5. yagibrary (Astro) 向けフォーマット整形処理
+# ==============================================================================
+def format_post_for_yagibrary(
+    raw_markdown: str,
+    paper: Dict[str, Any],
+    quality: Dict[str, Any]
+) -> str:
+    """
+    yagibrary (Astro content collections) のフォーマット仕様に合わせて整形：
+    1. title, date, summary, tags の Frontmatter 生成・正規化
+    2. 本文冒頭の不要な # 見出しの除去
+    3. Markdownの **太字** を HTMLの <strong>太字</strong> に変換（AGENTS.mdルール遵守）
+    4. 採点レポートを記事末尾に付加（太字は <strong> 使用）
+    """
+    # Frontmatter の抽出
+    frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
+    
+    parsed_meta = {}
+    body = raw_markdown.strip()
+    
+    if frontmatter_match:
+        yaml_content = frontmatter_match.group(1)
+        body = frontmatter_match.group(2).strip()
+        try:
+            parsed_meta = yaml.safe_load(yaml_content) or {}
+        except Exception as e:
+            print(f"⚠️ Frontmatter YAML パース失敗: {e}")
+
+    # タイトルの決定
+    title = parsed_meta.get("title")
+    if not title:
+        # 本文先頭の見出しから抽出を試みる
+        h1_match = re.match(r"^#\s+(.+)$", body, re.MULTILINE)
+        if h1_match:
+            title = h1_match.group(1).strip()
+            body = re.sub(r"^#\s+.+\n*", "", body, count=1).strip()
+        else:
+            title = f"【arXiv最新論文解説】{paper['title']}"
+
+    # 本文冒頭の重複した # 見出し（h1）を削除
+    body = re.sub(r"^#\s+.*?\n+", "", body).strip()
+
+    # summary の決定
+    summary = parsed_meta.get("summary")
+    if not summary:
+        summary = f"arXiv:{paper['arxiv_id']} 「{paper['title']}」の徹底解説。量子情報・物理の最新進展と筆者独自のオピニオンを交えて紐解きます。"
+
+    # tags の決定
+    tags = parsed_meta.get("tags")
+    if not tags or not isinstance(tags, list):
+        tags = ["物理学", "量子情報", paper["jev_metrics"].get("subfield", "理論物理")]
+    # 重複除去
+    cleaned_tags = []
+    for t in tags:
+        if str(t).strip() and str(t).strip() not in cleaned_tags:
+            cleaned_tags.append(str(t).strip())
+
+    # JST タイムスタンプ
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+
+    # 本文中の **太字** を <strong>太字</strong> に変換 (AGENTS.mdルール)
+    body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
+
+    # Jev パイプライン採点レポート (太字は <strong> 使用)
+    meta_section = f"""
+
+---
+
+### 📊 本日の自律型 AI パイプライン採点レポート
+- <strong>選定元</strong>: arXiv ({paper['arxiv_id']}) / カテゴリ: {', '.join(paper['categories'])}
+- <strong>Jev スクリーニングスコア</strong>:
+  - 量子情報・物理合致度: <code>{paper['jev_metrics']['is_quantum_relevant']*100:.1f}%</code>
+  - 理論的新規性・深度: <code>{paper['jev_metrics']['theoretical_depth']:.2f} / 3.0</code>
+  - 話題性・アピール度: <code>{paper['jev_metrics']['blog_appeal']:.2f} / 3.0</code>
+  - サブ領域: <code>{paper['jev_metrics']['subfield']}</code>
+- <strong>記事のオピニオン診断</strong>:
+  - 筆者スタンス度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
+  - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
+  - 読者印象: <code>{quality.get('impression', 'N/A')}</code>
+"""
+
+    # Astro 用 Frontmatter の構築
+    frontmatter_dict = {
+        "title": title,
+        "date": now_jst,
+        "summary": summary,
+        "tags": cleaned_tags,
+    }
+    
+    frontmatter_yaml = yaml.dump(
+        frontmatter_dict,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False
+    ).strip()
+
+    final_post = f"---\n{frontmatter_yaml}\n---\n\n{body}\n{meta_section}"
+    return final_post
+
+
+# ==============================================================================
 # メイン実行関数
 # ==============================================================================
-def run_daily_pipeline(max_papers: int = 15, output_dir: str = "generated_posts") -> str:
+def run_daily_pipeline(max_papers: int = 15, output_dir: Optional[str] = None) -> str:
     print("\n" + "=" * 65)
     print(" 🚀 arXiv × TypeSafe Jev × Gemini 全自動論文ブロガー 起動")
     print(" 🎯 対象カテゴリ: hep-th (高エネルギー理論) & quant-ph (量子情報)")
     print("=" * 65)
+
+    # 保存先ディレクトリの決定 (yagibrary の posts ディレクトリを優先)
+    if output_dir is None:
+        if os.path.exists(DEFAULT_YAGIBRARY_POSTS_DIR):
+            target_dir = DEFAULT_YAGIBRARY_POSTS_DIR
+        else:
+            target_dir = os.path.join(os.path.dirname(__file__), "generated_posts")
+    else:
+        target_dir = output_dir
 
     # 1. 論文取得
     papers = fetch_arxiv_papers(max_results=max_papers)
@@ -431,36 +558,20 @@ def run_daily_pipeline(max_papers: int = 15, output_dir: str = "generated_posts"
     best_paper = ranked_papers[0]
 
     # 3. Gemini によるブログ記事執筆
-    post_markdown = write_blog_post_with_gemini(best_paper)
+    raw_markdown = write_blog_post_with_gemini(best_paper)
 
     # 4. Jev による推敲オピニオンチェック
-    quality = verify_post_with_jev(post_markdown)
+    quality = verify_post_with_jev(raw_markdown)
 
-    # 記事末尾に Jev の診断メタデータを追加
-    meta_section = f"""
+    # 5. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換など)
+    final_post = format_post_for_yagibrary(raw_markdown, best_paper, quality)
 
----
-
-### 📊 本日の自律型 AI パイプライン採点レポート
-- **選定元**: arXiv ({best_paper['arxiv_id']}) / カテゴリ: {', '.join(best_paper['categories'])}
-- **Jev スクリーニングスコア**:
-  - 量子情報・物理合致度: `{best_paper['jev_metrics']['is_quantum_relevant']*100:.1f}%`
-  - 理論的新規性・深度: `{best_paper['jev_metrics']['theoretical_depth']:.2f} / 3.0`
-  - 話題性・アピール度: `{best_paper['jev_metrics']['blog_appeal']:.2f} / 3.0`
-  - サブ領域: `{best_paper['jev_metrics']['subfield']}`
-- **記事のオピニオン診断**:
-  - 筆者スタンス度: `{quality.get('stance', 0):.2f} / 3.0`
-  - 「で、あなたの意見は？」リスク: `{quality.get('lack_of_opinion_risk', 0)*100:.1f}%`
-  - 読者印象: `{quality.get('impression', 'N/A')}`
-"""
-    final_post = post_markdown + meta_section
-
-    # 5. ファイル保存
-    os.makedirs(output_dir, exist_ok=True)
+    # 6. ファイル保存
+    os.makedirs(target_dir, exist_ok=True)
     today_str = datetime.now().strftime("%Y-%m-%d")
-    clean_id = best_paper['arxiv_id'].replace('/', '_')
+    clean_id = best_paper['arxiv_id'].replace('/', '_').replace('.', '-')
     filename = f"{today_str}-arxiv-{clean_id}.md"
-    file_path = os.path.join(output_dir, filename)
+    file_path = os.path.join(target_dir, filename)
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(final_post)
