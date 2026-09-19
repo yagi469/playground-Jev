@@ -511,6 +511,12 @@ tags:
      数式
      $$
 
+5. **前提知識の導入と途中計算・行間の明示（最重要：読者を置いてけぼりにしない解説）**:
+   - 難解な専門用語や結果の数式をいきなり天下り式に並べないでください。
+   - 使用する記号（ゲージ群、接続、構造定数など）や、電磁気学（U(1)）等の既知の初等理論との違いを必ず事前に平易に定義・説明してください。
+   - 核心となる数式については、「なぜその式になるのか」「どう変形したのか」という『途中計算のステップ（行間）』を1〜3段階明記し、読者が自分の頭で追体験できるように解説してください。
+   - 数学的手続きが物理的に「何を解決するために必要なのか」という動機を必ず言葉で解き明かしてください。
+
 Markdown形式で出力してください。
 """
 
@@ -553,17 +559,31 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         # 1. 数理・理論の具体性
         "mathematical_depth": Score(
             instructions=(
-                "記事中で、論文の核心となる数学的構造（対称性、代数、幾何学的配位、双対性、不変量、作用素など）や"
-                "理論的機構が、抽象的な形容詞や美辞麗句だけでなく、具体的にわかりやすく論理的に解説されているかを評価してください。"
+                "記事中で、核心となる数学的構造（対称性、代数、幾何学的配位、双対性、不変量、作用素など）や"
+                "理論的機構が、抽象的な形容詞だけでなく、具体的に論理的に解説されているかを評価してください。"
             ),
             criteria=[
-                "中身が薄い（抽象的な美辞麗句やお茶濁しばかりで、何がどう作用しているのか数理のロジックが見えない）",
+                "中身が薄い（抽象的な美辞麗句ばかりで、何がどう作用しているのか数理のロジックが見えない）",
                 "表面的（専門用語は並んでいるが、どういう仕組みで問題が解決されたかの掘り下げが浅い）",
                 "明確で具体的（アイデアや数理構造、物理的帰結の論理展開が明快に解説されている）",
                 "極めて深い（非摂動効果や厳密解、代数・幾何の核心と美しさが鮮やかに浮き彫りにされている）",
             ],
         ),
-        # 2. 筆者オピニオンの切れ味・独自スタンス
+        # 2. 教育的明快さ・前提知識と途中計算（行間）の丁寧さ
+        "pedagogical_clarity": Score(
+            instructions=(
+                "前提知識（何が既知で何が新しいのか）や使用する記号・演算子の定義が丁寧に説明され、"
+                "主要な数式の導出ステップ（なぜその式になるのか、どう変形したのかの行間）が、"
+                "読者が自分の頭で追体験できるように明快かつ親切に解説されているかを評価してください。"
+            ),
+            criteria=[
+                "読者置いてけぼり（前提や記号の定義がなく、途中計算も抜けていて難解な数式が突然並んでいる）",
+                "行間が不親切（専門用語や結果の式が並んでいるが、どういう計算を経て導かれたのかの筋道が見えにくい）",
+                "明快で親切（前提知識や記号の意味が明示され、主要な数式の導出ステップが論理的に追える）",
+                "圧倒的な教育的明快さ（初等概念との対比から途中計算、物理的帰結までが完璧に繋がっており、極めて深く理解できる）",
+            ],
+        ),
+        # 3. 筆者オピニオンの切れ味・独自スタンス
         "author_stance": Score(
             instructions=(
                 "「で、私（筆者）はどう考えるか？」セクションを含め、記事全体を通して筆者独自の視点・問題意識・"
@@ -576,11 +596,11 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
                 "強烈な独自オピニオンや鋭い批判的考察があり、知的刺激に満ちている",
             ],
         ),
-        # 3. 読者の知的好奇心刺激度
+        # 4. 読者の知的好奇心刺激度
         "intellectual_appeal": Score(
             instructions=(
                 "数理物理学や理論物理に関心を持つ読者にとって、知的好奇心が強く刺激され、"
-                "「この論文を読んでみたい」「この視点は面白い」と思わせる魅力があるかを評価してください。"
+                "「この論文/本を読んでみたい」「この視点は面白い」と思わせる魅力があるかを評価してください。"
             ),
             criteria=[
                 "退屈・安易（子供騙しの比喩やありふれたAIまとめ構文で、知的好奇心が湧かない）",
@@ -589,57 +609,69 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
                 "圧倒的（理論物理の真の美しさとスリルが伝わり、読者を強く引き込む名論考）",
             ],
         ),
-        # 4. 最大の改善ボトルネック診断
+        # 5. 最大の改善ボトルネック診断
         "critique_diagnosis": Choice(
             instructions="この記事のクオリティをさらに高めるために、最も改善が必要なボトルネックはどこですか？",
             criteria={
+                "need_pedagogical_steps": "前提知識・記号の定義が不足、または数式の途中計算（行間）が省略されている。読者が追体験できる導出ステップの解説が必要",
                 "need_math_details": "核心アイデアの数理的機構や代数・幾何のロジックが抽象的。具体的な作用素・不変量・計算機構の解説が必要",
                 "need_sharp_opinion": "筆者オピニオンが論文の無難なまとめ。独自の問い・批判的考察・数理的意義をもっと熱く語るべき",
                 "avoid_shallow_metaphors": "安易な日常のたとえ話やAI特有のお茶濁しが目立つ。理論物理の真の美しさに徹するべき",
-                "high_quality": "数理の具体性、オピニオンの深さ、知的好奇心刺激度が極めて高い水準で調和している",
+                "high_quality": "前提の丁寧さ、数理の具体性、途中計算、オピニオンの深さが極めて高い水準で調和している",
             },
         ),
-        # 5. 「で、あなたの意見は？」肩透かしリスク
+        # 6. 「で、あなたの意見は？」肩透かしリスク
         "lack_of_opinion_risk": Noul(
             instructions="読者が読み終わった後に「事実は分かったけど、結局筆者はどう思っているの？」と肩透かしを感じるリスクがありますか？"
+        ),
+        # 7. 「難解すぎて置いてけぼり」リスク
+        "rushed_math_risk": Noul(
+            instructions="前提知識や途中計算の説明を省いて結論の数式を急ぎすぎ、読者が『置いてけぼり』や『理解不能』に感じるリスクがありますか？"
         ),
     }
 
     try:
         res = typesafe_client.system_one(state={"post": post_content}, questions=questions)
         math_depth = res.scores["mathematical_depth"].score
+        clarity = res.scores["pedagogical_clarity"].score
         stance = res.scores["author_stance"].score
         appeal = res.scores["intellectual_appeal"].score
         diagnosis = res.choices["critique_diagnosis"].choice
-        risk = res.nouls["lack_of_opinion_risk"].noul
+        risk_opinion = res.nouls["lack_of_opinion_risk"].noul
+        risk_rushed = res.nouls["rushed_math_risk"].noul
 
-        total_score = math_depth + stance + appeal  # 最大 9.0
+        total_score = math_depth + clarity + stance + appeal  # 最大 12.0
 
-        # 足切り基準: 総合 7.0 以上、かつ各項目 2.0 以上、かつリスク 35% 未満
+        # 足切り基準: 総合 9.2 以上、かつ各項目 2.0 以上、かつリスク 35% 未満
         passed = (
-            (total_score >= 7.0)
+            (total_score >= 9.2)
             and (math_depth >= 2.0)
+            and (clarity >= 2.0)
             and (stance >= 2.0)
             and (appeal >= 2.0)
-            and (risk < 0.35)
+            and (risk_opinion < 0.35)
+            and (risk_rushed < 0.35)
         )
 
         print(f"  📊 [Round {round_num} 診断結果]")
         print(f"     ・数理の具体性: {math_depth:.2f} / 3.0")
+        print(f"     ・行間・途中計算の丁寧さ: {clarity:.2f} / 3.0")
         print(f"     ・筆者スタンス: {stance:.2f} / 3.0")
         print(f"     ・知的好奇心度: {appeal:.2f} / 3.0")
-        print(f"     ・総合品質点数: {total_score:.2f} / 9.0 (判定: {'✅ 合格' if passed else '⚠️ 足切り・改善要'})")
+        print(f"     ・総合品質点数: {total_score:.2f} / 12.0 (判定: {'✅ 合格' if passed else '⚠️ 足切り・改善要'})")
         print(f"     ・診断ボトルネック: {diagnosis}")
-        print(f"     ・肩透かしリスク: {risk:.1%}")
+        print(f"     ・肩透かしリスク: {risk_opinion:.1%} / 置いてけぼりリスク: {risk_rushed:.1%}")
 
         return {
             "round": round_num,
             "math_depth": math_depth,
+            "clarity": clarity,
             "stance": stance,
             "appeal": appeal,
             "total_score": round(total_score, 2),
             "diagnosis": diagnosis,
-            "lack_of_opinion_risk": risk,
+            "lack_of_opinion_risk": risk_opinion,
+            "rushed_math_risk": risk_rushed,
             "passed": passed,
         }
     except Exception as e:
@@ -647,11 +679,13 @@ def verify_post_with_jev(post_content: str, round_num: int = 1) -> Dict[str, Any
         return {
             "round": round_num,
             "math_depth": 2.0,
+            "clarity": 2.0,
             "stance": 2.0,
             "appeal": 2.0,
-            "total_score": 6.0,
+            "total_score": 8.0,
             "diagnosis": "high_quality",
             "lack_of_opinion_risk": 0.2,
+            "rushed_math_risk": 0.2,
             "passed": True,  # エラー時はパイプライン停止を防ぐため通過
         }
 
@@ -675,7 +709,16 @@ def rewrite_blog_post_with_gemini(
     # ボトルネックに応じた重点改善指示
     diagnosis = feedback_metrics.get("diagnosis", "")
     focus_instructions = []
-    
+
+    if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
+        focus_instructions.append(
+            "- 【最重要：前提知識と途中計算（行間）の徹底解説】読者が置いてけぼりになっています！"
+            "難解な専門用語や結果の数式をいきなり展示するのを完全にやめてください。\n"
+            "  1. 記号（各文字が何を表すか）や前提となる初等概念（電磁気学や標準的な場の理論など）との違いを必ず平易に定義・説明してください。\n"
+            "  2. 重要な数式については、なぜその式になるのか、どう変形したのかという『途中計算のステップ（1〜3ステップ）』を必ず本文中に明記してください。\n"
+            "  3. 「なぜこの概念・計算が必要なのか」という物理的・数学的動機を、読者が納得できるように丁寧に解き明かしてください。"
+        )
+
     if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
         focus_instructions.append(
             "- 【最重要：数理的機構の具体化】抽象的なお茶濁し（「〜という枠組みを導入した」等）を完全に排除してください。"
@@ -988,11 +1031,13 @@ def format_post_for_yagibrary(
   - 話題性・アピール度: <code>{paper['jev_metrics']['blog_appeal']:.2f} / 3.0</code>
   - サブ領域: <code>{paper['jev_metrics']['subfield']}</code>
 - <strong>Jev 記事品質推敲（Evaluator-Optimizer）</strong>:
-  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 9.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
+  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 12.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
   - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
+  - 行間・途中計算の丁寧さ: <code>{quality.get('clarity', 0):.2f} / 3.0</code>
   - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
   - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
+  - 「難解・置いてけぼり」リスク: <code>{quality.get('rushed_math_risk', 0)*100:.1f}%</code>
   - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
 
@@ -1484,6 +1529,12 @@ tags:
      数式
      $$
 
+5. **前提知識の導入と途中計算・行間の明示（最重要：読者を置いてけぼりにしない解説）**:
+   - 難解な専門用語や結果の数式をいきなり天下り式に並べないでください。
+   - 使用する記号（ゲージ群、接続、構造定数など）や、電磁気学（U(1)）等の既知の初等理論との違いを必ず事前に平易に定義・説明してください。
+   - 核心となる数式については、「なぜその式になるのか」「どう変形したのか」という『途中計算のステップ（行間）』を1〜3段階明記し、読者が自分の頭で追体験できるように解説してください。
+   - 数学的手続き（共変微分の導入、ゴースト、BRSTなど）が物理的に「何を解決するために必要なのか」という動機を必ず言葉で解き明かしてください。
+
 Markdown形式で出力してください。
 """
 
@@ -1533,6 +1584,15 @@ def rewrite_doc_blog_post_with_gemini(
 
     diagnosis = feedback_metrics.get("diagnosis", "")
     focus_instructions = []
+
+    if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
+        focus_instructions.append(
+            "- 【最重要：前提知識と途中計算（行間）の徹底解説】読者が置いてけぼりになっています！"
+            "難解な専門用語や結果の数式をいきなり展示するのを完全にやめてください。\n"
+            "  1. 記号（各文字が何を表すか）や前提となる初等概念（電磁気学や標準的な場の理論など）との違いを必ず平易に定義・説明してください。\n"
+            "  2. 重要な数式については、なぜその式になるのか、どう変形したのかという『途中計算のステップ（1〜3ステップ）』を必ず本文中に明記してください。\n"
+            "  3. 「なぜこの概念・計算が必要なのか」という物理的・数学的動機を、読者が納得できるように丁寧に解き明かしてください。"
+        )
 
     if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
         focus_instructions.append(
@@ -1735,11 +1795,13 @@ def format_doc_post_for_yagibrary(
 ### 📊 本日の自律型 AI ドキュメント解析レポート
 - <strong>解析対象</strong>: <code>{doc_info['file_name']}</code> ({doc_info.get('page_label', '全編')})
 {chapter_info}- <strong>Jev 記事品質推敲（Evaluator-Optimizer）</strong>:
-  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 9.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
+  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 12.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
   - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
+  - 行間・途中計算の丁寧さ: <code>{quality.get('clarity', 0):.2f} / 3.0</code>
   - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
   - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
+  - 「難解・置いてけぼり」リスク: <code>{quality.get('rushed_math_risk', 0)*100:.1f}%</code>
   - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
 
