@@ -415,8 +415,21 @@ function renderGeminiResults(resp) {
     ` : ''}
 
     <div>
-      <div style="font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px;">リライト後の文章:</div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+        <span style="font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">リライト後の文章:</span>
+        <button class="btn-apply-rewrite" id="btn-apply-rewrite">
+          <span>📝 入力欄 (State) に反映する</span>
+        </button>
+      </div>
       <div class="rewrite-box" id="improved-text-content">${escapeHtml(g.improved_text)}</div>
+    </div>
+
+    <!-- Before vs After 比較セクションコンテナ -->
+    <div class="comparison-section" id="comparison-container">
+      <div style="display: flex; align-items: center; gap: 8px; color: #c4b5fd; font-size: 13px;">
+        <div class="loader-spinner" style="display: inline-block; width: 14px; height: 14px; border-width: 2px;"></div>
+        <span>Jev でリライト後の文章を再推論し、数値を比較中...</span>
+      </div>
     </div>
 
     ${improvementsList ? `
@@ -442,8 +455,227 @@ function renderGeminiResults(resp) {
     });
   });
 
+  // 入力欄に反映ボタン
+  document.getElementById("btn-apply-rewrite").addEventListener("click", () => {
+    stateInputEl.value = g.improved_text;
+    const btn = document.getElementById("btn-apply-rewrite");
+    btn.innerHTML = `<span>✓ 入力欄に反映しました！</span>`;
+    stateInputEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    stateInputEl.style.borderColor = "var(--accent-emerald)";
+    setTimeout(() => {
+      btn.innerHTML = `<span>📝 入力欄 (State) に反映する</span>`;
+      stateInputEl.style.borderColor = "";
+    }, 2500);
+  });
+
   // スクロールして結果を見せる
   geminiResultsBoxEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  // リライト後の Jev 自動再評価と数値比較レンダリング
+  evaluateAndRenderComparison(lastEvaluatedResults, g.improved_text);
+}
+
+// リライト前後の Jev 数値比較
+async function evaluateAndRenderComparison(beforeResults, improvedText) {
+  const container = document.getElementById("comparison-container");
+  if (!container || !beforeResults) return;
+
+  try {
+    const afterData = await safeFetchJson("/api/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state_text: improvedText,
+        preset_key: currentPresetKey,
+      }),
+    });
+
+    const afterResults = afterData.results;
+    let cardsHtml = "";
+
+    Object.keys(beforeResults).forEach((qId) => {
+      const bItem = beforeResults[qId];
+      const aItem = afterResults[qId];
+      if (!aItem) return;
+
+      const label = bItem.label || qId;
+      let valRowHtml = "";
+      let deltaBadgeHtml = "";
+      let barsHtml = "";
+
+      if (bItem.type === "score") {
+        const bScore = bItem.score;
+        const aScore = aItem.score;
+        const delta = aScore - bScore;
+        const maxScore = (bItem.criteria && bItem.criteria.length > 1) ? bItem.criteria.length - 1 : 3;
+        const bPct = Math.min(100, Math.max(0, (bScore / maxScore) * 100)).toFixed(1);
+        const aPct = Math.min(100, Math.max(0, (aScore / maxScore) * 100)).toFixed(1);
+
+        const isNegativeMetric = qId.includes("clickbait") || qId.includes("frustration") || qId.includes("risk");
+        if (isNegativeMetric) {
+          if (delta < -0.15) {
+            deltaBadgeHtml = `<span class="comp-delta-badge reduced-risk">${delta.toFixed(2)} ↓ 抑制改善</span>`;
+          } else if (delta > 0.15) {
+            deltaBadgeHtml = `<span class="comp-delta-badge warning">+${delta.toFixed(2)} ↑ 上昇</span>`;
+          } else {
+            deltaBadgeHtml = `<span class="comp-delta-badge neutral">±0.00 維持</span>`;
+          }
+        } else {
+          if (delta > 0.15) {
+            deltaBadgeHtml = `<span class="comp-delta-badge improved">+${delta.toFixed(2)} ↑ 向上</span>`;
+          } else if (delta < -0.15) {
+            deltaBadgeHtml = `<span class="comp-delta-badge warning">${delta.toFixed(2)} ↓ 低下</span>`;
+          } else {
+            deltaBadgeHtml = `<span class="comp-delta-badge neutral">±0.00 維持</span>`;
+          }
+        }
+
+        valRowHtml = `
+          <div class="comp-values-row">
+            <div class="comp-col">
+              <span class="comp-col-tag">Before (元)</span>
+              <span class="comp-col-val before-val">${bScore.toFixed(2)}</span>
+            </div>
+            <span class="comp-arrow">➔</span>
+            <div class="comp-col" style="text-align: right;">
+              <span class="comp-col-tag">After (リライト)</span>
+              <span class="comp-col-val after-val">${aScore.toFixed(2)}</span>
+            </div>
+          </div>
+        `;
+
+        barsHtml = `
+          <div class="comp-bars-container">
+            <div class="comp-bar-row">
+              <span class="comp-bar-tag">Before</span>
+              <div class="comp-bar-track">
+                <div class="comp-bar-fill-before" style="width: ${bPct}%;"></div>
+              </div>
+              <span style="font-size: 10px; color: var(--text-dim); width: 32px; text-align: right;">${bScore.toFixed(1)}</span>
+            </div>
+            <div class="comp-bar-row">
+              <span class="comp-bar-tag" style="color: #38bdf8;">After</span>
+              <div class="comp-bar-track">
+                <div class="comp-bar-fill-after" style="width: ${aPct}%;"></div>
+              </div>
+              <span style="font-size: 10px; color: #38bdf8; font-weight: 600; width: 32px; text-align: right;">${aScore.toFixed(1)}</span>
+            </div>
+          </div>
+        `;
+      } else if (bItem.type === "noul") {
+        const bYes = bItem.noul;
+        const aYes = aItem.noul;
+        const bPct = (bYes * 100).toFixed(1);
+        const aPct = (aYes * 100).toFixed(1);
+        const delta = (parseFloat(aPct) - parseFloat(bPct)).toFixed(1);
+
+        const isRiskMetric = qId.includes("misunderstanding") || qId.includes("block") || qId.includes("exploit") || qId.includes("risk");
+        if (isRiskMetric) {
+          if (parseFloat(delta) < -2.0) {
+            deltaBadgeHtml = `<span class="comp-delta-badge reduced-risk">${delta}% ↓ リスク低減</span>`;
+          } else if (parseFloat(delta) > 2.0) {
+            deltaBadgeHtml = `<span class="comp-delta-badge warning">+${delta}% ↑ リスク増加</span>`;
+          } else {
+            deltaBadgeHtml = `<span class="comp-delta-badge neutral">±0% 維持</span>`;
+          }
+        } else {
+          if (parseFloat(delta) > 2.0) {
+            deltaBadgeHtml = `<span class="comp-delta-badge improved">+${delta}% ↑ 実践度向上</span>`;
+          } else if (parseFloat(delta) < -2.0) {
+            deltaBadgeHtml = `<span class="comp-delta-badge warning">${delta}% ↓</span>`;
+          } else {
+            deltaBadgeHtml = `<span class="comp-delta-badge neutral">±0% 維持</span>`;
+          }
+        }
+
+        valRowHtml = `
+          <div class="comp-values-row">
+            <div class="comp-col">
+              <span class="comp-col-tag">Before (Yes確率)</span>
+              <span class="comp-col-val before-val">${bPct}%</span>
+            </div>
+            <span class="comp-arrow">➔</span>
+            <div class="comp-col" style="text-align: right;">
+              <span class="comp-col-tag">After (Yes確率)</span>
+              <span class="comp-col-val after-val">${aPct}%</span>
+            </div>
+          </div>
+        `;
+
+        barsHtml = `
+          <div class="comp-bars-container">
+            <div class="comp-bar-row">
+              <span class="comp-bar-tag">Before</span>
+              <div class="comp-bar-track">
+                <div class="comp-bar-fill-before" style="width: ${bPct}%;"></div>
+              </div>
+              <span style="font-size: 10px; color: var(--text-dim); width: 38px; text-align: right;">${bPct}%</span>
+            </div>
+            <div class="comp-bar-row">
+              <span class="comp-bar-tag" style="color: #38bdf8;">After</span>
+              <div class="comp-bar-track">
+                <div class="comp-bar-fill-after" style="width: ${aPct}%;"></div>
+              </div>
+              <span style="font-size: 10px; color: #38bdf8; font-weight: 600; width: 38px; text-align: right;">${aPct}%</span>
+            </div>
+          </div>
+        `;
+      } else if (bItem.type === "choice") {
+        const bChoice = bItem.choice;
+        const aChoice = aItem.choice;
+        const isChanged = bChoice !== aChoice;
+
+        deltaBadgeHtml = isChanged
+          ? `<span class="comp-delta-badge improved">カテゴリ変化</span>`
+          : `<span class="comp-delta-badge neutral">維持</span>`;
+
+        valRowHtml = `
+          <div class="comp-values-row">
+            <div class="comp-col">
+              <span class="comp-col-tag">Before</span>
+              <span class="comp-col-val before-val" style="font-size: 13px;">${escapeHtml(bChoice)}</span>
+            </div>
+            <span class="comp-arrow">➔</span>
+            <div class="comp-col" style="text-align: right;">
+              <span class="comp-col-tag">After</span>
+              <span class="comp-col-val after-val" style="font-size: 13px;">${escapeHtml(aChoice)}</span>
+            </div>
+          </div>
+        `;
+      }
+
+      cardsHtml += `
+        <div class="comp-card">
+          <div class="comp-card-top">
+            <span class="comp-label">${escapeHtml(label)}</span>
+            ${deltaBadgeHtml}
+          </div>
+          ${valRowHtml}
+          ${barsHtml}
+        </div>
+      `;
+    });
+
+    container.innerHTML = `
+      <div class="comparison-header">
+        <div class="comparison-title-group">
+          <span class="comparison-title">📊 Jev による改善効果の数値測定 (Before vs After)</span>
+          <span class="comparison-subtitle">同じ評価軸で即座に再推論し、客観的な変化を数値化</span>
+        </div>
+        <span style="font-size: 11px; color: var(--accent-emerald);">⏱️ 再評価完了 (${afterData.elapsed_ms} ms)</span>
+      </div>
+      <div class="comparison-cards-grid">
+        ${cardsHtml}
+      </div>
+    `;
+  } catch (err) {
+    console.error("Comparison re-eval error:", err);
+    container.innerHTML = `
+      <div style="font-size: 12px; color: var(--accent-rose); padding: 8px;">
+        ⚠️ リライト後の数値比較の取得中にエラーが発生しました: ${escapeHtml(err.message)}
+      </div>
+    `;
+  }
 }
 
 function escapeHtml(str) {
