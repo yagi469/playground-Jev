@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TypeSafe (Jev) - System One Playground</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="background-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <header class="navbar">
+    <div class="logo-container">
+      <div class="logo-icon">⚡</div>
+      <div class="logo-text">
+        <span class="brand-title">TypeSafe</span>
+        <span class="brand-model">Jev System One</span>
+      </div>
+    </div>
+    <div class="nav-badges">
+      <div class="badge model-badge">Model: jev-latest</div>
+      <div class="badge status-badge" id="api-status">
+        <span class="dot online"></span> API Ready
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Hero / Title -->
+    <section class="hero-section">
+      <h1 class="hero-title">System One 意思決定プレイグラウンド</h1>
+      <p class="hero-desc">
+        自然言語のテキスト（State）と型付きの質問（Choice / Score / Noul）を送り、ソフトウェアが直接利用できる確信度付きの構造化判断結果を並列取得します。
+      </p>
+    </section>
+
+    <!-- Preset Selector -->
+    <div class="preset-bar">
+      <span class="preset-label">プリセット:</span>
+      <div class="preset-chips" id="preset-chips">
+        <!-- JSで動的生成 -->
+      </div>
+    </div>
+
+    <!-- Main Workspace Grid -->
+    <div class="workspace-grid">
+      <!-- Left Panel: Input & Question Definitions -->
+      <section class="panel input-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">📝</span>
+            <h2>入力 (State)</h2>
+          </div>
+          <button class="btn-text" id="btn-reset">デフォルトに戻す</button>
+        </div>
+
+        <div class="input-body">
+          <label for="state-input" class="field-label">評価対象テキスト (State)</label>
+          <textarea id="state-input" class="state-textarea" rows="7" placeholder="評価したい文章やドキュメントを入力してください..."></textarea>
+
+          <div class="questions-summary-card">
+            <div class="card-subtitle">同時に並列評価される質問 (Questions)</div>
+            <div id="questions-list" class="questions-list">
+              <!-- JSで動的生成 -->
+            </div>
+          </div>
+
+          <button id="btn-evaluate" class="btn-primary">
+            <span class="btn-icon">⚡</span>
+            <span class="btn-text-main">Jev で評価を実行</span>
+            <div class="loader-spinner" id="eval-loader"></div>
+          </button>
+        </div>
+      </section>
+
+      <!-- Right Panel: Results -->
+      <section class="panel output-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-icon">📊</span>
+            <h2>評価結果 (Decisions & Probabilities)</h2>
+          </div>
+          <div class="metrics-hud" id="metrics-hud" style="display: none;">
+            <span class="hud-item" id="hud-time">⏱️ -- ms</span>
+            <span class="hud-item" id="hud-tokens">🪙 In: -- / Out: --</span>
+          </div>
+        </div>
+
+        <div class="output-body" id="results-container">
+          <!-- 初期プレースホルダー -->
+          <div class="empty-state" id="empty-state">
+            <div class="empty-icon">🎯</div>
+            <h3>判定結果がここに表示されます</h3>
+            <p>左側の「Jev で評価を実行」ボタンを押すと、3つの質問が同時に高速評価されます。</p>
+          </div>
+
+          <!-- 結果カード一覧（JSで動的描画） -->
+          <div class="results-cards" id="results-cards" style="display: none;"></div>
+
+          <!-- Jev × Gemini 連携アクションエリア -->
+          <div class="gemini-action-section" id="gemini-action-section" style="display: none;">
+            <div class="gemini-action-bar">
+              <div class="gemini-badge-group">
+                <span class="gemini-sparkle">✨</span>
+                <div>
+                  <div class="gemini-title">Gemini 3 (最新モデル) で弱点を改善・リライト</div>
+                  <div class="gemini-desc">Jevが検出した改善課題を元に、Google Developer Program 特典でピンポイント推敲</div>
+                </div>
+              </div>
+              <button id="btn-improve-gemini" class="btn-gemini">
+                <span>✨ リライト案を生成</span>
+                <div class="loader-spinner" id="gemini-loader"></div>
+              </button>
+            </div>
+
+            <!-- Gemini の改善リライト結果表示 -->
+            <div class="gemini-results-box" id="gemini-results-box" style="display: none;">
+              <!-- JSで動的描画 -->
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p>Powered by <a href="https://typesafe.ai" target="_blank">TypeSafe AI</a> · Jev Model</p>
+  </footer>
+
+  <script src="app.js?v=20260919"></script>
+</body>
+</html>
