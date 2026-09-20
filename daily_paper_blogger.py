@@ -428,7 +428,11 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
 # ==============================================================================
 # 3. Google Gemini による本格ブログ執筆
 # ==============================================================================
-def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
+def write_blog_post_with_gemini(
+    paper: Dict[str, Any],
+    rank: int = 1,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """
     選定されたベスト論文をもとに、筆者の熱量と考察が入ったブログ記事を自動執筆
     """
@@ -447,6 +451,13 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
         themes = ", ".join(user_profile.get("core_themes", []))
         user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論（ワインバーグ流の厳密性）、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理や非摂動的・対称性的観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
 
+    related_context = ""
+    if relevant_posts:
+        lines = []
+        for rp in relevant_posts:
+            lines.append(f"- [{rp['title']}]({rp['url']}) (概要: {rp.get('summary', '')[:100]})")
+        related_context = f"\n【当ブログの関連する過去記事（文脈の記憶）】\n当ブログには以下の過去記事が存在します。本文の論理展開の中で、関連する概念や背景・先行理論に触れる際、自然に以下の過去記事への言及・リンク（例: [タイトル](/posts/slug)）を1〜2箇所織り交ぜて、ブログ全体の知識ネットワークを有機的に繋げてください：\n" + "\n".join(lines) + "\n"
+
     full_text_section = ""
     fc = paper.get("full_text_content")
     if fc:
@@ -464,7 +475,7 @@ def write_blog_post_with_gemini(paper: Dict[str, Any], rank: int = 1) -> str:
     prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
-{user_perspective}
+{user_perspective}{related_context}
 【取り上げる論文情報】
 - arXiv ID: {paper['arxiv_id']}
 - 論文タイトル: {paper['title']}
@@ -712,6 +723,7 @@ def rewrite_blog_post_with_gemini(
     feedback_metrics: Dict[str, Any],
     revision_round: int,
     rank: int = 1,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Jev による診断結果・ボトルネック指摘に基づき、Gemini にブログ記事をリライトさせる
@@ -844,6 +856,7 @@ def generate_refined_blog_post(
     paper: Dict[str, Any],
     rank: int = 1,
     max_revisions: int = 2,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
     """
     Evaluator-Optimizer パターンによる自律改善パイプライン:
@@ -853,7 +866,7 @@ def generate_refined_blog_post(
     4. 最終記事ドラフト、最終品質メトリクス、改善履歴リストを返す
     """
     # Step 1: 初回執筆
-    current_post = write_blog_post_with_gemini(paper, rank=rank)
+    current_post = write_blog_post_with_gemini(paper, rank=rank, relevant_posts=relevant_posts)
     
     # Step 2: 初回検証
     metrics = verify_post_with_jev(current_post, round_num=1)
@@ -872,6 +885,7 @@ def generate_refined_blog_post(
             feedback_metrics=metrics,
             revision_round=round_count,
             rank=rank,
+            relevant_posts=relevant_posts,
         )
         
         # 再検証
@@ -945,6 +959,83 @@ def is_paper_already_blogged(paper: Dict[str, Any], existing_ids: set) -> bool:
     return any(c in existing_ids for c in candidates)
 
 
+def load_existing_posts_index(posts_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    保存先ディレクトリ内の既存記事から、タイトル・要約・タグ・スラッグのインデックスを構築
+    """
+    if posts_dir is None:
+        posts_dir = DEFAULT_YAGIBRARY_POSTS_DIR
+    
+    index = []
+    if not os.path.exists(posts_dir):
+        return index
+
+    for fname in os.listdir(posts_dir):
+        if not fname.endswith(".md"):
+            continue
+        slug = fname[:-3]  # .md を除去
+        filepath = os.path.join(posts_dir, fname)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+            m = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+            if m:
+                meta = yaml.safe_load(m.group(1)) or {}
+                title = meta.get("title")
+                summary = meta.get("summary", "")
+                tags = meta.get("tags", [])
+                if title:
+                    index.append({
+                        "slug": slug,
+                        "title": title,
+                        "summary": summary,
+                        "tags": tags if isinstance(tags, list) else [],
+                        "url": f"/posts/{slug}",
+                    })
+        except Exception:
+            continue
+    return index
+
+
+def find_relevant_past_posts(
+    current_title: str,
+    current_tags: List[str],
+    current_text: str,
+    posts_index: List[Dict[str, Any]],
+    current_slug: Optional[str] = None,
+    max_matches: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    現在の記事のタイトル、タグ、要約/本文から、最も関連度の高い過去記事を 1〜max_matches 本選出
+    """
+    if not posts_index:
+        return []
+
+    scored_posts = []
+    current_tag_set = {str(t).lower() for t in current_tags}
+    current_keywords = set(re.findall(r"[\w]+", (current_title + " " + current_text[:1000]).lower()))
+
+    for post in posts_index:
+        if current_slug and post["slug"] == current_slug:
+            continue
+
+        score = 0
+        post_tags = {str(t).lower() for t in post.get("tags", [])}
+        common_tags = current_tag_set & post_tags
+        score += len(common_tags) * 3
+
+        post_keywords = set(re.findall(r"[\w]+", (post["title"] + " " + post.get("summary", "")).lower()))
+        common_words = current_keywords & post_keywords
+        common_words = {w for w in common_words if len(w) >= 2 and w not in {"the", "and", "for", "with", "this", "that", "解説", "入門", "理論", "物理学"}}
+        score += len(common_words)
+
+        if score > 0:
+            scored_posts.append((score, post))
+
+    scored_posts.sort(key=lambda x: x[0], reverse=True)
+    return [p[1] for p in scored_posts[:max_matches]]
+
+
 # ==============================================================================
 # 6. yagibrary (Astro) 向けフォーマット整形処理
 # ==============================================================================
@@ -955,13 +1046,15 @@ def format_post_for_yagibrary(
     rank: int = 1,
     time_offset_seconds: int = 0,
     history: Optional[List[Dict[str, Any]]] = None,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     yagibrary (Astro content collections) のフォーマット仕様に合わせて整形：
     1. title, date, summary, tags の Frontmatter 生成・正規化
     2. 本文冒頭の不要な # 見出しの除去
     3. Markdownの **太字** を HTMLの <strong>太字</strong> に変換（AGENTS.mdルール遵守）
-    4. 採点レポートを記事末尾に付加（Evaluator-Optimizer 推敲履歴を含む）
+    4. 関連記事リンクセクションを本文末尾に付加
+    5. 採点レポートを記事末尾に付加（Evaluator-Optimizer 推敲履歴を含む）
     """
     # Frontmatter の抽出
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -1022,6 +1115,22 @@ def format_post_for_yagibrary(
     # 横スクロール（スライド）可能にするため \n\n$$\n式\n$$\n\n に展開
     body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
 
+    # 関連記事セクション（文脈の記憶・ネットワーク）
+    related_section = ""
+    if relevant_posts:
+        rel_lines = []
+        for rp in relevant_posts:
+            s_short = rp.get('summary', '')[:90]
+            desc = f" - {s_short}..." if s_short else ""
+            rel_lines.append(f"- [{rp['title']}]({rp['url']}){desc}")
+        related_section = f"""
+
+---
+
+### 🔗 あわせて読みたい当ブログの関連記事
+{chr(10).join(rel_lines)}
+"""
+
     # 推敲改善履歴の整形
     revision_count = len(history) if history else 1
     history_steps = []
@@ -1072,7 +1181,7 @@ def format_post_for_yagibrary(
         default_flow_style=False
     ).strip()
 
-    final_post = f"---\n{frontmatter_yaml}\n---\n\n{body}\n{meta_section}"
+    final_post = f"---\n{frontmatter_yaml}\n---\n\n{body}{related_section}\n{meta_section}"
     return final_post
 
 
@@ -1119,10 +1228,11 @@ def run_daily_pipeline(
         print(f"  第{i+1}位: [{p['arxiv_id']}] {p['title'][:65]}...")
         print(f"         総合スコア: {m['total_score']} | 関連度: {m['is_quantum_relevant']:.1%} | 魅力: {m['blog_appeal']:.1f} | {m['subfield']}")
 
-    # 既存記事の arXiv ID を検出
+    # 既存記事のインデックス構築 & arXiv ID 検出
+    posts_index = load_existing_posts_index(target_dir)
     existing_arxiv_ids = get_existing_arxiv_ids(target_dir)
     if existing_arxiv_ids:
-        print(f"📚 既存記事ディレクトリ ({target_dir}) から執筆済み arXiv ID を照合中...")
+        print(f"📚 既存記事ディレクトリ ({target_dir}) から {len(posts_index)} 件の記事インデックスと執筆済み arXiv ID を照合中...")
 
     # 記事化対象の選定（未執筆のものを上位から top_n_to_blog 件選定）
     target_papers = []
@@ -1154,6 +1264,18 @@ def run_daily_pipeline(
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
+        # 過去記事インデックスから関連する記事を自動検索
+        paper_tags = paper.get("categories", []) + [paper.get("jev_metrics", {}).get("subfield", "")]
+        relevant_posts = find_relevant_past_posts(
+            current_title=paper.get("title", ""),
+            current_tags=paper_tags,
+            current_text=paper.get("summary", ""),
+            posts_index=posts_index,
+            max_matches=3,
+        )
+        if relevant_posts:
+            print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
+
         # 2.5. 論文本文（HTML/ar5iv）の重要セクション抽出
         paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
 
@@ -1162,6 +1284,7 @@ def run_daily_pipeline(
             paper=paper,
             rank=rank,
             max_revisions=2,
+            relevant_posts=relevant_posts,
         )
 
         # 4. yagibrary 形式へのフォーマット整形 (Frontmatter、<strong> タグ変換、推敲レポート等)
@@ -1174,6 +1297,7 @@ def run_daily_pipeline(
             rank=rank,
             time_offset_seconds=time_offset,
             history=history,
+            relevant_posts=relevant_posts,
         )
 
         # 5. ファイル保存
@@ -1221,6 +1345,8 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
     # Jev で評価・スコアリング（診断レポート作成用）
     ranked_papers = screen_and_rank_papers_with_jev(papers)
 
+    posts_index = load_existing_posts_index(target_dir)
+
     os.makedirs(target_dir, exist_ok=True)
     today_str = datetime.now().strftime("%Y-%m-%d")
     generated_files = []
@@ -1232,6 +1358,18 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
         print(f"    タイトル: {paper['title']}")
         print("-" * 65)
 
+        # 過去記事インデックスから関連する記事を自動検索
+        paper_tags = paper.get("categories", []) + [paper.get("jev_metrics", {}).get("subfield", "")]
+        relevant_posts = find_relevant_past_posts(
+            current_title=paper.get("title", ""),
+            current_tags=paper_tags,
+            current_text=paper.get("summary", ""),
+            posts_index=posts_index,
+            max_matches=3,
+        )
+        if relevant_posts:
+            print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
+
         # 論文本文（HTML/ar5iv）の重要セクション抽出
         paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
 
@@ -1240,6 +1378,7 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
             paper=paper,
             rank=batch_idx,
             max_revisions=2,
+            relevant_posts=relevant_posts,
         )
 
         time_offset = (len(ranked_papers) - batch_idx) * 60
@@ -1250,6 +1389,7 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
             rank=batch_idx,
             time_offset_seconds=time_offset,
             history=history,
+            relevant_posts=relevant_posts,
         )
 
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
@@ -1489,7 +1629,10 @@ def load_and_process_local_file(
     return doc_info
 
 
-def write_blog_post_from_doc_with_gemini(doc_info: Dict[str, Any]) -> str:
+def write_blog_post_from_doc_with_gemini(
+    doc_info: Dict[str, Any],
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """
     PDF または Markdown の内容から、Gemini で本格的な数理物理ブログ記事（初稿）を執筆
     """
@@ -1502,10 +1645,17 @@ def write_blog_post_from_doc_with_gemini(doc_info: Dict[str, Any]) -> str:
     chapter_focus = f"- フォーカスする章・テーマ: {doc_info['chapter_hint']}\n" if doc_info.get("chapter_hint") else ""
     page_focus = f"- 抽出範囲: {doc_info['page_label']}\n" if doc_info.get("page_label") else ""
 
+    related_context = ""
+    if relevant_posts:
+        lines = []
+        for rp in relevant_posts:
+            lines.append(f"- [{rp['title']}]({rp['url']}) (概要: {rp.get('summary', '')[:100]})")
+        related_context = f"\n【当ブログの関連する過去記事（文脈の記憶）】\n当ブログには以下の過去記事が存在します。本文の論理展開の中で、関連する概念や背景理論・数理構造に触れる際、自然に以下の過去記事への言及・内部リンク（例: [タイトル](/posts/slug)）を1〜2箇所織り交ぜて、ブログ全体の知識ネットワークを有機的に繋げてください：\n" + "\n".join(lines) + "\n"
+
     prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理・数理構造の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
-
+{related_context}
 【取り上げるドキュメント情報】
 - 文書名: {doc_info['file_name']}
 - タイトル: {doc_info['title']}
@@ -1590,6 +1740,7 @@ def rewrite_doc_blog_post_with_gemini(
     previous_draft: str,
     feedback_metrics: Dict[str, Any],
     revision_round: int,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Jev のフィードバックに基づきドキュメント解説記事を再推敲"""
     global gemini_client
@@ -1634,6 +1785,11 @@ def rewrite_doc_blog_post_with_gemini(
 
     focus_text = "\n".join(focus_instructions)
 
+    related_reminder = ""
+    if relevant_posts:
+        lines = [f"- [{rp['title']}]({rp['url']})" for rp in relevant_posts]
+        related_reminder = "\n【過去記事へのリンク維持・活用】\n" + "\n".join(lines) + "\n関連する過去記事への内部リンクが自然に含まれていることを確認してください。\n"
+
     rewrite_prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造の最前線を探究する理論物理学者兼サイエンスブロガーです。
 
 先ほどあなたが執筆したブログ記事ドラフトに対し、Jev System One 診断システムから以下の品質診断スコアと改善要求が届きました。
@@ -1648,7 +1804,7 @@ def rewrite_doc_blog_post_with_gemini(
 
 【今回のリライトにおける必須改善指令】
 {focus_text}
-
+{related_reminder}
 ---
 【対象ドキュメント情報】
 - 文書名: {doc_info['file_name']}
@@ -1703,10 +1859,11 @@ def rewrite_doc_blog_post_with_gemini(
 def generate_refined_doc_blog_post(
     doc_info: Dict[str, Any],
     max_revisions: int = 2,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
     """Gemini 執筆 ➡️ Jev 診断 ➡️ 必要に応じ Gemini リライトの自律推敲ループ"""
     # 1. 初稿執筆
-    current_draft = write_blog_post_from_doc_with_gemini(doc_info)
+    current_draft = write_blog_post_from_doc_with_gemini(doc_info, relevant_posts=relevant_posts)
 
     history = []
     # 2. 初稿の品質検証
@@ -1724,6 +1881,7 @@ def generate_refined_doc_blog_post(
                 previous_draft=current_draft,
                 feedback_metrics=quality,
                 revision_round=revision_round,
+                relevant_posts=relevant_posts,
             )
             quality = verify_post_with_jev(current_draft, round_num=revision_round)
             history.append(quality)
@@ -1744,6 +1902,7 @@ def format_doc_post_for_yagibrary(
     doc_info: Dict[str, Any],
     quality: Dict[str, Any],
     history: Optional[List[Dict[str, Any]]] = None,
+    relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """yagibrary (Astro) の形式に合わせて整形し、Frontmatter と Jev 診断レポートを付加"""
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -1792,6 +1951,22 @@ def format_doc_post_for_yagibrary(
     # 独立数式ブロックの正規化
     body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
 
+    # 関連記事セクション（文脈の記憶・ネットワーク）
+    related_section = ""
+    if relevant_posts:
+        rel_lines = []
+        for rp in relevant_posts:
+            s_short = rp.get('summary', '')[:90]
+            desc = f" - {s_short}..." if s_short else ""
+            rel_lines.append(f"- [{rp['title']}]({rp['url']}){desc}")
+        related_section = f"""
+
+---
+
+### 🔗 あわせて読みたい当ブログの関連記事
+{chr(10).join(rel_lines)}
+"""
+
     # 推敲改善履歴
     revision_count = len(history) if history else 1
     history_steps = []
@@ -1835,7 +2010,7 @@ def format_doc_post_for_yagibrary(
         default_flow_style=False
     ).strip()
 
-    return f"---\n{frontmatter_yaml}\n---\n\n{body}\n{meta_section}"
+    return f"---\n{frontmatter_yaml}\n---\n\n{body}{related_section}\n{meta_section}"
 
 
 def run_file_pipeline(
@@ -1867,11 +2042,34 @@ def run_file_pipeline(
     # 1. ファイル読込 & メタデータ抽出
     doc_info = load_and_process_local_file(file_path, pages_str=pages, chapter_hint=chapter)
 
+    # 過去記事インデックスから関連する記事を自動検索
+    posts_index = load_existing_posts_index(target_dir)
+    doc_tags = doc_info.get("categories", []) + [doc_info.get("subfield", "")]
+    relevant_posts = find_relevant_past_posts(
+        current_title=doc_info.get("title", ""),
+        current_tags=doc_tags,
+        current_text=doc_info.get("summary", ""),
+        posts_index=posts_index,
+        max_matches=3,
+    )
+    if relevant_posts:
+        print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
+
     # 2. 自律執筆 ＆ Jev推敲ループ
-    raw_markdown, quality, history = generate_refined_doc_blog_post(doc_info, max_revisions=2)
+    raw_markdown, quality, history = generate_refined_doc_blog_post(
+        doc_info,
+        max_revisions=2,
+        relevant_posts=relevant_posts,
+    )
 
     # 3. Astro 向け整形
-    final_post = format_doc_post_for_yagibrary(raw_markdown, doc_info, quality, history=history)
+    final_post = format_doc_post_for_yagibrary(
+        raw_markdown,
+        doc_info,
+        quality,
+        history=history,
+        relevant_posts=relevant_posts,
+    )
 
     # 4. ファイル名生成 & 保存
     today_str = datetime.now().strftime("%Y-%m-%d")
