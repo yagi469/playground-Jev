@@ -108,6 +108,7 @@ jobs:
             git add src/content/posts
             TODAY=$(date +'%Y-%m-%d')
             git commit -m "post: auto-generate blog article for ${TODAY}"
+            git pull --rebase origin master
             git push origin master
             echo "✅ Successfully pushed new articles to yagibrary! This triggers deploy.yml on yagibrary."
           else
