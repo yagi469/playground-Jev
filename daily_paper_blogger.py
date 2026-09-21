@@ -560,7 +560,7 @@ Markdown形式で出力してください。
 # ==============================================================================
 # 4. Jev による多面品質検証 & Evaluator-Optimizer リライトループ
 # ==============================================================================
-from score_post import verify_post_with_jev
+from score_post import verify_post_with_jev, classify_genre_with_jev
 
 
 
@@ -1303,7 +1303,7 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
 # ローカルファイル（PDF / Markdown）処理パイプライン
 # ==============================================================================
 def resolve_document_path(file_path: str) -> str:
-    """ローカルファイルパスを解決する（OS間の区切り文字の違い、カレント、yagibrary、docs等を自動探索）"""
+    """ローカルファイルパスを解決する（OS間の区切り文字の違い、カレント、yagibrary、docs配下の再帰的探索）"""
     # Windows のバックスラッシュをスラッシュに正規化
     normalized = file_path.replace("\\", "/").strip()
     clean_rel = re.sub(r"^(?:docs/|yagibrary/docs/|yagibrary/)", "", normalized)
@@ -1333,6 +1333,29 @@ def resolve_document_path(file_path: str) -> str:
     for c in unique_candidates:
         if os.path.exists(c) and os.path.isfile(c):
             return c
+
+    # 4. docs フォルダ配下のサブディレクトリを再帰的に探索
+    target_basename = os.path.basename(normalized)
+    possible_names = [target_basename]
+    # 拡張子がない場合は .pdf, .md, .txt 等も候補に追加
+    if "." not in target_basename:
+        possible_names.extend([f"{target_basename}.pdf", f"{target_basename}.md", f"{target_basename}.txt"])
+
+    search_roots = [
+        os.path.abspath(os.path.join(script_dir, "../yagibrary/docs")),
+        os.path.join(script_dir, "yagibrary/docs"),
+        os.path.join(script_dir, "docs"),
+    ]
+
+    for root_dir in search_roots:
+        if os.path.exists(root_dir) and os.path.isdir(root_dir):
+            for root, _, files in os.walk(root_dir):
+                for f in files:
+                    for name in possible_names:
+                        if f.lower() == name.lower():
+                            found_path = os.path.normpath(os.path.join(root, f))
+                            if os.path.isfile(found_path):
+                                return found_path
 
     raise FileNotFoundError(f"指定されたファイルが見つかりませんでした: '{file_path}'. 探索候補: {unique_candidates}")
 
@@ -1398,11 +1421,12 @@ def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> T
 def load_and_process_local_file(
     file_path: str,
     pages_str: Optional[str] = None,
-    chapter_hint: Optional[str] = None
+    chapter_hint: Optional[str] = None,
+    genre: Optional[str] = "auto",
 ) -> Dict[str, Any]:
     """
     ローカルの PDF または Markdown / Text ファイルを読み込み、Gemini 用のコンテンツオブジェクトと
-    基本メタデータ（タイトル・要約・サブ領域など）を構造化して返す。
+    基本メタデータ（タイトル・要約・ジャンル・サブ領域など）を構造化して返す。
     """
     global gemini_client
     if gemini_client is None:
@@ -1422,6 +1446,7 @@ def load_and_process_local_file(
         "extension": ext,
         "chapter_hint": chapter_hint or "",
         "page_label": "",
+        "genre": genre or "auto",
     }
 
     if ext == ".pdf":
@@ -1439,8 +1464,9 @@ def load_and_process_local_file(
   "title": "このドキュメントまたは対象セクションの的確なタイトル（日本語または英語の原題）",
   "authors": ["著者名または編者名（判明する場合）"],
   "summary": "このドキュメント/対象セクションで論じられている核心内容の要約（150〜250文字）",
-  "categories": ["数理物理", "場の量子論", "その他関連分野タグ3個程度"],
-  "subfield": "SCFT, AdS/CFT, カイラル代数, 非摂動QFT など具体的な専門分野"
+  "genre": "business（ビジネス・マネジメント・組織論・経済）, tech（ソフトウェア・システム設計・工学）, physics（数理物理・理論物理・量子・科学論文）, general（一般教養・その他）のいずれか1つを必ず選択",
+  "categories": ["ドキュメント内容に即した適切なカテゴリタグ3〜4個（例: マネジメント, 組織論, 生産性 / 場の量子論, 超弦理論 / アーキテクチャ, クラウド 等）"],
+  "subfield": "具体的な専門分野やテーマ（例: 組織マネジメント, 生産管理, カイラル代数, 分散システム 等）"
 }}
 """
         try:
@@ -1460,8 +1486,9 @@ def load_and_process_local_file(
                 "title": os.path.splitext(file_name)[0],
                 "authors": ["著者不明"],
                 "summary": f"{file_name} の抜粋解説（{page_label}）。",
-                "categories": ["数理物理", "理論物理"],
-                "subfield": "数理物理学",
+                "genre": "general",
+                "categories": ["ドキュメント解説", "読書ノート"],
+                "subfield": "文献解説",
             }
 
         doc_info.update(meta)
@@ -1481,8 +1508,9 @@ def load_and_process_local_file(
   "title": "この文書の的確なタイトル",
   "authors": ["著者名（判明する場合）"],
   "summary": "この文書の核心内容の要約（150〜250文字）",
-  "categories": ["数理物理", "場の量子論", "その他関連分野タグ3個程度"],
-  "subfield": "SCFT, AdS/CFT, カイラル代数, 非摂動QFT など具体的な専門分野"
+  "genre": "business（ビジネス・マネジメント・組織論・経済）, tech（ソフトウェア・システム設計・工学）, physics（数理物理・理論物理・量子・科学論文）, general（一般教養・その他）のいずれか1つを必ず選択",
+  "categories": ["文書内容に即した適切なカテゴリタグ3〜4個"],
+  "subfield": "具体的な専門分野やテーマ"
 }}
 
 【文書本文（先頭抜粋）】
@@ -1505,17 +1533,110 @@ def load_and_process_local_file(
                 "title": os.path.splitext(file_name)[0],
                 "authors": ["記録者"],
                 "summary": f"{file_name} の解説ノート。",
-                "categories": ["数理物理", "研究ノート"],
-                "subfield": "数理物理学",
+                "genre": "general",
+                "categories": ["ドキュメント解説", "読書ノート"],
+                "subfield": "文献解説",
             }
 
         doc_info.update(meta)
     else:
         raise ValueError(f"未対応のファイル形式です: {ext} (対応: .pdf, .md, .markdown, .txt)")
 
+    # ジャンル判定: ユーザー指定がない場合は TypeSafe Jev で型安全に自動分類
+    if not genre or genre == "auto":
+        summary_sample = doc_info.get("summary", "") or doc_info.get("text_content", "")[:1500]
+        detected_genre = classify_genre_with_jev(
+            title=doc_info.get("title", file_name),
+            summary_or_text=summary_sample,
+        )
+        doc_info["genre"] = detected_genre
+    else:
+        doc_info["genre"] = genre
+
     print(f"   🏷️ 認識タイトル: {doc_info.get('title')}")
+    print(f"   📚 確定ジャンル: {doc_info.get('genre')}")
     print(f"   🏷️ 専門サブ領域: {doc_info.get('subfield')}")
     return doc_info
+
+
+
+
+def get_genre_blog_config(genre: str, doc_info: Dict[str, Any]) -> Dict[str, Any]:
+    """ドキュメントのジャンルに応じたペルソナ、見出し構成、フォーカス指示を返す"""
+    title = doc_info.get("title", "")
+    ch_hint = doc_info.get("chapter_hint", "")
+    ch_str = f" - {ch_hint}" if ch_hint else ""
+
+    if genre in ["business", "management"]:
+        persona = (
+            "あなたは経営・組織マネジメント・生産工学・テックリードの最前線を探究する、気鋭のビジネス・テックエッセイストです。\n"
+            "ありふれた自己啓発の精神論や浅い常識の焼き直しに逃げず、本書が提示する組織力学の真のロジック、"
+            "ボトルネックと因果関係、実践フレームワークを生き生きと語り尽くす、知的好奇心と実務への洞察に満ちたブログ記事を執筆してください。"
+        )
+        sections = f"""
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{title}』{ch_str}）について言及し、本書が提示する最も本質的な洞察と問題意識を1分で掴むロードマップを示してください。
+     - ## 現場を縛る見えない壁と誤謬: なぜ従来のやり方や「良かれと思った常識」が破綻するのか、組織やチームが直面するボトルネックや構造的問題をクリアに解説。
+     - ## 核心フレームワークと実践モデル: 著者が提示する中核の思考法、生産・組織モデル、原理原則（例: 朝食工場モデル、制限ステップ、マネジメントレバレッジ、タスク習熟度など）を、具体例を交えて体系的に解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・批評）単なる要約で終わらせず、現代のIT・スタートアップ組織や個人の働き方に照らし合わせ、「何が本質で、どこに現代特有の適用限界や落とし穴があるのか」など、骨太なオピニオンを展開。
+     - ## まとめ ＆ アクション指針: 記事の総括と、明日からの意思決定・組織運営に活かせる実践的教訓の箇条書き。
+"""
+        guidance = (
+            "- 【最重要】数理物理の数式や物理学の比喩（量子力学、場の理論など）を無理に持ち出さないでください。\n"
+            "- 生産プロセス、組織ダイナミクス、意思決定の因果関係を、具体的かつ論理的に解き明かしてください。"
+        )
+        default_tags = ["ビジネス", "マネジメント", "組織論", "生産性"]
+
+    elif genre in ["tech", "engineering"]:
+        persona = (
+            "あなたは最新のソフトウェア設計、クラウドアーキテクチャ、分散システムの実務に精通したシニアシステムアーキテクト兼テックブロガーです。\n"
+            "表層的なチュートリアルやお茶濁しではなく、設計思想の核心、トレードオフ、現場での実践価値を鮮明に語る記事を執筆してください。"
+        )
+        sections = f"""
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{title}』{ch_str}）に言及し、技術的コアと解決する課題の直観的イメージを提示。
+     - ## アーキテクチャの課題と設計の壁: 従来の方式の何が課題だったのか、なぜこの技術・設計が本質的なブレイクスルーなのかを解説。
+     - ## 核心メカニズムと実装パターン: システム内部の動作メカニズム、データ構造、通信プロトコル、設計パターンを具体的に解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：技術選定とオピニオン）単なる仕様まとめではなく、現場への導入コスト、運用負荷、トレードオフ、代替技術との比較を深く論じる。
+     - ## まとめ ＆ 実装・検証指針: 記事の総括と、現場で試すための実践的ポイント。
+"""
+        guidance = "具体的なアーキテクチャの構成、設計上のトレードオフ、動作原理のロジックを明快に解説してください。"
+        default_tags = ["エンジニアリング", "アーキテクチャ", "テクノロジー"]
+
+    elif genre in ["physics", "math"]:
+        persona = (
+            "あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。\n"
+            "安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理・数理構造の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。"
+        )
+        sections = f"""
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{title}』{ch_str}）に言及し、難解な数式に入る前に『この記事の核心アイデア（1分で掴む直観的イメージ）』を提示して読者が迷子にならないロードマップを示してください。
+     - ## 背景にある物理・数学の壁: 従来の枠組みの何が未解決だったのか、なぜこの理論・概念が本質的なのかを論理的かつクリアに解説。
+     - ## 核心アイデアと数理的機構: 著者がどのようなアイデア・数理構造（対称性、代数、幾何学的配位、双対性など）を展開しているかを解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・ツッコミ）単なる要約で終わらせず、数理物理・非摂動QFT・超対称性の視点から「ここが美しい」「この仮定・手法はどこまで拡張可能か？」など、研究者としての骨太なオピニオンを展開。
+     - ## まとめ ＆ 参考文献・関連情報: 記事の総括と文献情報。
+"""
+        guidance = "前提知識の導入と途中計算・行間の明示（最重要）。数式ブロックは独立行に出力。"
+        default_tags = ["物理学", "数理物理", "理論物理"]
+
+    else:
+        persona = (
+            "あなたはその分野の背景や思想に精通し、物事の本質を鮮やかに射抜く鋭い批評眼を持つエッセイスト兼ブロガーです。\n"
+            "表層的な要約にとどまらず、著者の思想的コア、背景にあるパラダイムシフト、現代への意義を深く掘り下げる記事を執筆してください。"
+        )
+        sections = f"""
+     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{title}』{ch_str}）に言及し、核心メッセージを提示。
+     - ## 提起された問いとパラダイムの限界: なぜこの問いが生まれたのか、従来の常識や前提が直面していた壁を解説。
+     - ## 核心となる洞察と論理展開: 著者が提示する中核のロジック、証拠、思考モデルを具体的に解説。
+     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のオピニオン）単なる紹介で終わらせず、現代の課題に引きつけた独自の視点と深い考察を展開。
+     - ## まとめ ＆ 思考を深めるヒント: 総括と読者への問いかけ。
+"""
+        guidance = "抽象論に逃げず、具体的な論理の因果関係と著者の核心メッセージを分かりやすく解き明かしてください。"
+        default_tags = ["読書論考", "文献解説", "教養"]
+
+    return {
+        "persona": persona,
+        "sections": sections,
+        "guidance": guidance,
+        "default_tags": default_tags,
+    }
 
 
 def write_blog_post_from_doc_with_gemini(
@@ -1523,13 +1644,16 @@ def write_blog_post_from_doc_with_gemini(
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
-    PDF または Markdown の内容から、Gemini で本格的な数理物理ブログ記事（初稿）を執筆
+    PDF または Markdown の内容から、Gemini でジャンル適応型の本格解説ブログ記事（初稿）を執筆
     """
     global gemini_client
     if gemini_client is None:
         init_gemini_client()
 
-    print(f"\n✍️ [Gemini 執筆] '{doc_info['title']}' の解説ブログ記事を自律生成中...")
+    genre = doc_info.get("genre", "general")
+    print(f"\n✍️ [Gemini 執筆] '{doc_info['title']}' (ジャンル: {genre}) の解説ブログ記事を自律生成中...")
+
+    g_config = get_genre_blog_config(genre, doc_info)
 
     chapter_focus = f"- フォーカスする章・テーマ: {doc_info['chapter_hint']}\n" if doc_info.get("chapter_hint") else ""
     page_focus = f"- 抽出範囲: {doc_info['page_label']}\n" if doc_info.get("page_label") else ""
@@ -1539,18 +1663,21 @@ def write_blog_post_from_doc_with_gemini(
         lines = []
         for rp in relevant_posts:
             lines.append(f"- [{rp['title']}]({rp['url']}) (概要: {rp.get('summary', '')[:100]})")
-        related_context = f"\n【当ブログの関連する過去記事（文脈の記憶）】\n当ブログには以下の過去記事が存在します。本文の論理展開の中で、関連する概念や背景理論・数理構造に触れる際、自然に以下の過去記事への言及・内部リンク（例: [タイトル](/posts/slug)）を1〜2箇所織り交ぜて、ブログ全体の知識ネットワークを有機的に繋げてください：\n" + "\n".join(lines) + "\n"
+        related_context = f"\n【当ブログの関連する過去記事（文脈の記憶）】\n当ブログには以下の過去記事が存在します。本文の論理展開の中で、関連する概念や先行理論に触れる際、自然に以下の過去記事への言及・内部リンク（例: [タイトル](/posts/slug)）を1〜2箇所織り交ぜて、ブログ全体の知識ネットワークを有機的に繋げてください：\n" + "\n".join(lines) + "\n"
 
-    prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
+    tags_sample = "\n".join([f"  - {t}" for t in g_config["default_tags"]])
+
+    prompt = f"""{g_config['persona']}
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
-安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理・数理構造の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
+著者の思考の核心と現実への影響・独自オピニオンを生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
 {related_context}
 【取り上げるドキュメント情報】
 - 文書名: {doc_info['file_name']}
 - タイトル: {doc_info['title']}
 - 著者/編者: {', '.join(doc_info.get('authors', ['-']))}
-- 分野/カテゴリ: {', '.join(doc_info.get('categories', ['数理物理']))}
-- 専門領域: {doc_info.get('subfield', '数理物理学')}
+- 分野/カテゴリ: {', '.join(doc_info.get('categories', g_config['default_tags']))}
+- 専門領域: {doc_info.get('subfield', '一般')}
+- 判定ジャンル: {genre}
 {page_focus}{chapter_focus}- 概要:
 {doc_info.get('summary', '')}
 
@@ -1558,11 +1685,11 @@ def write_blog_post_from_doc_with_gemini(
 【記事の構成とフォーマット規則】
 1. **フロントマター（YAML Frontmatter）を記事先頭に必ず出力してください**:
 ---
-title: "思わずクリックしたくなる、知的好奇心と物理的本質を突いた日本語タイトル"
-summary: "120〜180文字程度の魅力的な記事要約（何が論じられ、なぜ物理・数理として美しいのかが伝わる文章）"
+title: "思わずクリックしたくなる、知的好奇心と本質を突いた日本語タイトル"
+summary: "120〜180文字程度の魅力的な記事要約（何が論じられ、どのような実践的・知的好奇心があるのかが伝わる文章）"
 tags:
-  - 物理学
-  - （ドキュメント内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用。例: 素粒子論, 超共形場理論, AdS-CFT, カイラル代数, 超弦理論, TQFTなど）
+{tags_sample}
+  - （ドキュメント内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用）
 ---
 
 2. **太字・強調ルールの遵守（最重要）**:
@@ -1572,23 +1699,10 @@ tags:
    - 本文の開始部分に「# タイトル」を置かないでください（フロントマターのtitleがWebサイト側で自動描画されるため）。
    - 本文の見出しは「## （見出し名）」から始めてください。
    - 以下の構成で執筆してください：
-     - ## 導入（1行サマリー ＆ つかみ）: この記事でわかることと読者の知的好奇心を一気に引き込む導入。冒頭で対象ドキュメント（『{doc_info['title']}』{' - ' + doc_info['chapter_hint'] if doc_info.get('chapter_hint') else ''}）について言及し、難解な数式に入る前に『この記事の核心アイデア（1分で掴む直観的イメージ）』を提示して読者が迷子にならないロードマップを示してください。
-     - ## 背景にある物理・数学の壁: 従来の枠組みの何が未解決だったのか、なぜこの理論・概念が本質的なのかを論理的かつクリアに解説。
-     - ## 核心アイデアと数理的機構: 著者がどのようなアイデア・数理構造（対称性、代数、幾何学的配位、双対性など）を展開しているかを解説。
-     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・ツッコミ）単なる要約で終わらせず、数理物理・非摂動QFT・超対称性の視点から「ここが美しい」「この仮定・手法はどこまで拡張可能か？」「今後の研究・学習における位置づけ」など、研究者としての骨太なオピニオンを展開。
-     - ## まとめ ＆ 参考文献・関連情報: 記事の総括と、文献情報（ファイル名: {doc_info['file_name']}、{doc_info['page_label']}）を分かりやすくリスト形式で設置してください。
+{g_config['sections']}
 
-4. **数式ブロック（Display Math）の改行ルール**:
-   - 独立したブロック数式（$$ ... $$）を出力する際は、インラインとして折り返されるのを防ぎ横スライド（スクロール）可能にするため、必ず前後に改行を入れて $$ を独立した行に配置してください：
-     $$
-     数式
-     $$
-
-5. **前提知識の導入と途中計算・行間の明示（最重要：読者を置いてけぼりにしない解説）**:
-   - 難解な専門用語や結果の数式をいきなり天下り式に並べないでください。
-   - 使用する記号（ゲージ群、接続、構造定数など）や、電磁気学（U(1)）等の既知の初等理論との違いを必ず事前に平易に定義・説明してください。
-   - 核心となる数式については、「なぜその式になるのか」「どう変形したのか」という『途中計算のステップ（行間）』を1〜3段階明記し、読者が自分の頭で追体験できるように解説してください。
-   - 数学的手続き（共変微分の導入、ゴースト、BRSTなど）が物理的に「何を解決するために必要なのか」という動機を必ず言葉で解き明かしてください。
+4. **執筆ガイドライン**:
+   {g_config['guidance']}
 
 Markdown形式で出力してください。
 """
@@ -1636,36 +1750,64 @@ def rewrite_doc_blog_post_with_gemini(
     if gemini_client is None:
         init_gemini_client()
 
-    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバックを反映してドキュメント記事を再推敲中...")
+    genre = doc_info.get("genre", "general")
+    g_config = get_genre_blog_config(genre, doc_info)
+
+    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバック（ジャンル: {genre}）を反映してドキュメント記事を再推敲中...")
 
     diagnosis = feedback_metrics.get("diagnosis", "")
     focus_instructions = []
 
-    if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
-        focus_instructions.append(
-            "- 【最重要：前提知識と途中計算（行間）の徹底解説】読者が置いてけぼりになっています！"
-            "難解な専門用語や結果の数式をいきなり展示するのを完全にやめてください。\n"
-            "  1. 記号（各文字が何を表すか）や前提となる初等概念（電磁気学や標準的な場の理論など）との違いを必ず平易に定義・説明してください。\n"
-            "  2. 重要な数式については、なぜその式になるのか、どう変形したのかという『途中計算のステップ（1〜3ステップ）』を必ず本文中に明記してください。\n"
-            "  3. 「なぜこの概念・計算が必要なのか」という物理的・数学的動機を、読者が納得できるように丁寧に解き明かしてください。"
-        )
-
-    if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
-        focus_instructions.append(
-            "- 【最重要：数理的機構の具体化】抽象的な表現やお茶濁しを排除し、具体的な数学的・物理的機構"
-            "（対称性、不変量、代数構造、指数の厳密計算、幾何学的性質など）がどう論理的に機能しているのかを明快に解説してください。"
-        )
-
-    if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
-        focus_instructions.append(
-            "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションを強化してください。"
-            "当たり障りのない要約を脱し、「どの数理的帰結が最も美しいか」「どのような意義や限界があるか」を熱量高く論じてください。"
-        )
-
-    if diagnosis == "avoid_shallow_metaphors":
-        focus_instructions.append(
-            "- 【日常比喩の排除】子供騙しの日常たとえ話を完全排除し、数理美そのもので読者を引き込んでください。"
-        )
+    if genre in ["business", "management"]:
+        if feedback_metrics.get("clarity", 0.0) < 2.0 or diagnosis == "need_pedagogical_steps":
+            focus_instructions.append(
+                "- 【最重要：前提の課題と因果関係の明快な解説】前提となる組織課題や具体例を補強し、"
+                "なぜそのフレームワークやプロセスになるのかという因果関係を読者が納得できるように丁寧に解き明かしてください。"
+            )
+        if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+            focus_instructions.append(
+                "- 【最重要：モデル・組織ダイナミクスの具体化】抽象的なお茶濁しや精神論を排除し、"
+                "著者が提示する具体的なフレームワーク、生産・組織モデル、評価制度のロジックを掘り下げて解説してください。"
+            )
+        if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+            focus_instructions.append(
+                "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションを強化してください。"
+                "当たり障りのない本の要約を脱し、現代のIT/スタートアップ組織や個人の働き方に照らし合わせた独自スタンスを熱量高く語ってください。"
+            )
+        if diagnosis == "avoid_shallow_metaphors":
+            focus_instructions.append(
+                "- 【安易な常識・クリシェの排除】ビジネス書のありふれたスローガンや陳腐な精神論を排除し、骨太な洞察に徹してください。"
+            )
+    elif genre in ["tech", "engineering"]:
+        if feedback_metrics.get("clarity", 0.0) < 2.0 or diagnosis == "need_pedagogical_steps":
+            focus_instructions.append(
+                "- 【最重要：前提知識と動作ステップの丁寧な解説】専門用語をいきなり並べず、前提知識を定義し、"
+                "システムがどのように問題を解決するのかのステップを明快に解説してください。"
+            )
+        if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+            focus_instructions.append(
+                "- 【最重要：アーキテクチャ・内部メカニズムの具体化】具体的なデータ構造、通信、設計パターンを具体的に掘り下げてください。"
+            )
+        if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+            focus_instructions.append(
+                "- 【最重要：エンジニアリングオピニオンの強化】技術選定のトレードオフや現場目線のオピニオンを鮮明に打ち出してください。"
+            )
+    else:
+        # physics / general
+        if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
+            focus_instructions.append(
+                "- 【最重要：前提知識と途中計算（行間）の徹底解説】読者が置いてけぼりになっています！"
+                "  1. 記号や前提となる初等概念との違いを必ず平易に定義・説明してください。\n"
+                "  2. 重要な数式については、なぜその式になるのかという『途中計算のステップ』を本文中に明記してください。"
+            )
+        if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+            focus_instructions.append(
+                "- 【最重要：数理的・論理的機構の具体化】具体的な機構がどう論理的に機能しているのかを明快に解説してください。"
+            )
+        if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+            focus_instructions.append(
+                "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションを強化してください。"
+            )
 
     if not focus_instructions:
         focus_instructions.append(
@@ -1679,15 +1821,15 @@ def rewrite_doc_blog_post_with_gemini(
         lines = [f"- [{rp['title']}]({rp['url']})" for rp in relevant_posts]
         related_reminder = "\n【過去記事へのリンク維持・活用】\n" + "\n".join(lines) + "\n関連する過去記事への内部リンクが自然に含まれていることを確認してください。\n"
 
-    rewrite_prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造の最前線を探究する理論物理学者兼サイエンスブロガーです。
+    rewrite_prompt = f"""{g_config['persona']}
 
 先ほどあなたが執筆したブログ記事ドラフトに対し、Jev System One 診断システムから以下の品質診断スコアと改善要求が届きました。
 
 【Jev による前稿（第{revision_round - 1}稿）の診断結果】
-- 数理・理論の具体性スコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
+- 具体性・深さスコア: {feedback_metrics.get('math_depth', 0.0):.2f} / 3.0
 - 筆者オピニオン度スコア: {feedback_metrics.get('stance', 0.0):.2f} / 3.0
 - 知的好奇心刺激度スコア: {feedback_metrics.get('appeal', 0.0):.2f} / 3.0
-- 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0 （基準未達・改善要）
+- 総合品質スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 9.0
 - 指摘されたボトルネック: {diagnosis}
 - 「あなたの意見は？」肩透かしリスク: {feedback_metrics.get('lack_of_opinion_risk', 0.0)*100:.1f}%
 
@@ -1699,6 +1841,7 @@ def rewrite_doc_blog_post_with_gemini(
 - 文書名: {doc_info['file_name']}
 - タイトル: {doc_info['title']}
 - 対象範囲: {doc_info.get('page_label', '')} / {doc_info.get('chapter_hint', '')}
+- 判定ジャンル: {genre}
 
 ---
 【前回のドラフト】
@@ -1709,7 +1852,7 @@ def rewrite_doc_blog_post_with_gemini(
 1. フロントマター（YAML）を必ず先頭に出力
 2. テキストの太字は必ず HTMLの <strong>太字</strong> タグを使用（Markdownの ** は禁止）
 3. 本文開始に「# タイトル」を置かない（## 見出しから開始）
-4. 独立行数式は必ず前後に改行を入れて $$ を独立行に配置（\n\n$$\n式\n$$\n\n）
+4. {g_config['guidance']}
 
 以上の指示に従い、圧倒的クオリティへと生まれ変わった完全版 Markdown 記事を出力してください。
 """
@@ -1745,18 +1888,27 @@ def rewrite_doc_blog_post_with_gemini(
     return post_text
 
 
+
 def generate_refined_doc_blog_post(
     doc_info: Dict[str, Any],
     max_revisions: int = 2,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
     """Gemini 執筆 ➡️ Jev 診断 ➡️ 必要に応じ Gemini リライトの自律推敲ループ"""
+    genre = doc_info.get("genre", "general")
+    domain_for_jev = (
+        "business" if genre in ["business", "management"]
+        else ("tech" if genre in ["tech", "engineering"]
+        else ("physics" if genre in ["physics", "math"]
+        else "general"))
+    )
+
     # 1. 初稿執筆
     current_draft = write_blog_post_from_doc_with_gemini(doc_info, relevant_posts=relevant_posts)
 
     history = []
     # 2. 初稿の品質検証
-    quality = verify_post_with_jev(current_draft, round_num=1)
+    quality = verify_post_with_jev(current_draft, round_num=1, domain=domain_for_jev)
     history.append(quality)
 
     revision_round = 1
@@ -1772,7 +1924,7 @@ def generate_refined_doc_blog_post(
                 revision_round=revision_round,
                 relevant_posts=relevant_posts,
             )
-            quality = verify_post_with_jev(current_draft, round_num=revision_round)
+            quality = verify_post_with_jev(current_draft, round_num=revision_round, domain=domain_for_jev)
             history.append(quality)
         except Exception as e:
             print(f"⚠️ リライト中にエラーが発生したため、前回のドラフトを採用します: {e}")
@@ -1784,6 +1936,7 @@ def generate_refined_doc_blog_post(
         print(f" ⚠️ リビジョン上限（{max_revisions}回）に達したため、現時点での最高推敲版を採用します。")
 
     return current_draft, quality, history
+
 
 
 def format_doc_post_for_yagibrary(
@@ -1817,13 +1970,28 @@ def format_doc_post_for_yagibrary(
 
     body = re.sub(r"^#\s+.*?\n+", "", body).strip()
 
+    genre = doc_info.get("genre", "general")
     summary = parsed_meta.get("summary")
     if not summary:
-        summary = f"『{doc_info['title']}』の解説記事。数理物理の深層と独自のオピニオンを交えて紐解きます。"
+        if genre in ["business", "management"]:
+            summary = f"『{doc_info['title']}』の解説記事。組織マネジメントの本質と実践フレームワークを独自のオピニオンを交えて紐解きます。"
+        elif genre in ["tech", "engineering"]:
+            summary = f"『{doc_info['title']}』の技術解説。アーキテクチャの核心とトレードオフを独自の視点で紐解きます。"
+        elif genre in ["physics", "math"]:
+            summary = f"『{doc_info['title']}』の解説記事。数理物理の深層と独自のオピニオンを交えて紐解きます。"
+        else:
+            summary = f"『{doc_info['title']}』の解説記事。核心の洞察と独自のオピニオンを交えて紐解きます。"
 
     tags = parsed_meta.get("tags")
     if not tags or not isinstance(tags, list):
-        tags = ["物理学", "数理物理", doc_info.get("subfield", "理論物理")]
+        if genre in ["business", "management"]:
+            tags = ["ビジネス", "マネジメント", "組織論", doc_info.get("subfield", "生産性")]
+        elif genre in ["tech", "engineering"]:
+            tags = ["エンジニアリング", "テクノロジー", "アーキテクチャ"]
+        elif genre in ["physics", "math"]:
+            tags = ["物理学", "数理物理", doc_info.get("subfield", "理論物理")]
+        else:
+            tags = ["読書論考", "文献解説", "教養"]
 
     cleaned_tags = []
     for t in tags:
@@ -1863,27 +2031,40 @@ def format_doc_post_for_yagibrary(
         for h in history:
             round_lbl = f"第{h.get('round', 1)}稿"
             score_lbl = f"{h.get('total_score', 0):.2f}点"
-            status_lbl = "合格" if h.get("passed") else f"足切り ({h.get('diagnosis', '要改善')})"
+            if h.get("passed"):
+                status_lbl = "合格 (最高品質)" if h.get("diagnosis") == "high_quality" else "合格"
+            else:
+                diag = h.get('diagnosis', '要改善')
+                status_lbl = "推敲継続" if diag == "high_quality" else f"要改善 ({diag})"
             history_steps.append(f"{round_lbl}: {score_lbl} [{status_lbl}]")
     history_summary = " ➡️ ".join(history_steps) if history_steps else f"{quality.get('total_score', 0):.2f}点"
 
+    final_pass_str = (
+        "合格 (最高品質クリア)" if quality.get("passed") and quality.get("diagnosis") == "high_quality"
+        else ("合格" if quality.get("passed")
+        else ("高評価採用" if quality.get("total_score", 0) >= 10.0
+        else "足切り後採用"))
+    )
+
     chapter_info = f"- <strong>対象章・セクション</strong>: {doc_info['chapter_hint']}\n" if doc_info.get("chapter_hint") else ""
+    depth_label = "数理・理論の具体性" if genre in ["physics", "math"] else ("技術・アーキテクチャの具体性" if genre in ["tech", "engineering"] else "モデル・因果関係の具体性")
     meta_section = f"""
 
 ---
 
 ### 📊 本日の自律型 AI ドキュメント解析レポート
 - <strong>解析対象</strong>: <code>{doc_info['file_name']}</code> ({doc_info.get('page_label', '全編')})
+- <strong>判定ジャンル</strong>: <code>{genre}</code>
 {chapter_info}- <strong>Jev 記事品質推敲（Evaluator-Optimizer）</strong>:
-  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 12.0</code>（判定: <code>{'合格' if quality.get('passed') else '足切り後採用'}</code>）
-  - 数理・理論の具体性: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
-  - 行間・途中計算の丁寧さ: <code>{quality.get('clarity', 0):.2f} / 3.0</code>
+  - 最終品質スコア: <code>{quality.get('total_score', 0):.2f} / 12.0</code>（判定: <code>{final_pass_str}</code>）
+  - {depth_label}: <code>{quality.get('math_depth', 0):.2f} / 3.0</code>
+  - 構成の明快さ: <code>{quality.get('clarity', 0):.2f} / 3.0</code>
   - 筆者オピニオン度: <code>{quality.get('stance', 0):.2f} / 3.0</code>
   - 知的好奇心刺激度: <code>{quality.get('appeal', 0):.2f} / 3.0</code>
   - 「で、あなたの意見は？」リスク: <code>{quality.get('lack_of_opinion_risk', 0)*100:.1f}%</code>
-  - 「難解・置いてけぼり」リスク: <code>{quality.get('rushed_math_risk', 0)*100:.1f}%</code>
   - 自律推敲・改善プロセス (計 {revision_count} 回): <code>{history_summary}</code>
 """
+
 
     frontmatter_dict = {
         "title": title,
@@ -1906,7 +2087,8 @@ def run_file_pipeline(
     file_path: str,
     pages: Optional[str] = None,
     chapter: Optional[str] = None,
-    output_dir: Optional[str] = None
+    genre: Optional[str] = "auto",
+    output_dir: Optional[str] = None,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
     print("\n" + "=" * 65)
@@ -1916,6 +2098,8 @@ def run_file_pipeline(
         print(f" 📑 指定ページ: {pages}")
     if chapter:
         print(f" 🎯 指定章/テーマ: {chapter}")
+    if genre and genre != "auto":
+        print(f" 📚 指定ジャンル: {genre}")
     print("=" * 65)
 
     if output_dir is None:
@@ -1928,8 +2112,8 @@ def run_file_pipeline(
 
     os.makedirs(target_dir, exist_ok=True)
 
-    # 1. ファイル読込 & メタデータ抽出
-    doc_info = load_and_process_local_file(file_path, pages_str=pages, chapter_hint=chapter)
+    # 1. ファイル読込 & メタデータ抽出（Jev によるジャンル自動分類を含む）
+    doc_info = load_and_process_local_file(file_path, pages_str=pages, chapter_hint=chapter, genre=genre)
 
     # 過去記事インデックスから関連する記事を自動検索
     posts_index = load_existing_posts_index(target_dir)
@@ -1997,9 +2181,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="arXiv / Document × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
     parser.add_argument("--arxiv-id", "-a", type=str, default="", help="特定の arXiv 論文番号（カンマ区切りで複数可。例: 2006.13892）")
-    parser.add_argument("--file", "-f", type=str, default="", help="ローカルのPDFまたはMarkdownファイルパス（例: docs/quantum_field_theory.pdf）")
+    parser.add_argument("--file", "-f", type=str, default="", help="ローカルのPDFまたはMarkdownファイルパス（例: docs/high_output_management.pdf）")
     parser.add_argument("--pages", "-p", type=str, default="", help="PDFの対象ページ範囲（例: 15-30, 45）")
-    parser.add_argument("--chapter", "-c", type=str, default="", help="フォーカスしたい章やテーマ（例: 'Chapter 3: Supersymmetry'）")
+    parser.add_argument("--chapter", "-c", type=str, default="", help="フォーカスしたい章やテーマ（例: 'Chapter 1: The Basics of Production'）")
+    parser.add_argument("--genre", "-g", type=str, default="auto", choices=["auto", "business", "tech", "physics", "general"], help="執筆ジャンル (デフォルト: auto)")
     parser.add_argument("--max-papers", "-m", type=int, default=50, help="arXivから自動取得する件数 (デフォルト: 50)")
     parser.add_argument("--top-n", "-n", type=int, default=3, help="ブログ記事化する上位件数 (デフォルト: 3)")
     parser.add_argument("--output-dir", "-o", type=str, default=None, help="記事保存先ディレクトリ")
@@ -2022,6 +2207,7 @@ if __name__ == "__main__":
             file_path=args.file.strip(),
             pages=args.pages.strip() or None,
             chapter=args.chapter.strip() or None,
+            genre=args.genre,
             output_dir=args.output_dir
         )
     elif args.arxiv_id.strip():
@@ -2031,5 +2217,6 @@ if __name__ == "__main__":
     else:
         # 自動スクリーニングモード
         run_daily_pipeline(max_papers=args.max_papers, top_n_to_blog=args.top_n, output_dir=args.output_dir)
+
 
 
