@@ -487,6 +487,181 @@ def format_markdown_for_yagibrary(
 
 
 # ==============================================================================
+# ノートブック＆ソース解決（共通ノートブックの再利用）
+# ==============================================================================
+DEFAULT_COMMON_NOTEBOOK = "気になったYouTube動画"
+
+
+
+def resolve_or_create_notebook(
+    notebook_target: Optional[str] = None,
+    new_notebook: bool = False,
+    video_id: Optional[str] = None,
+    verbose: bool = True,
+) -> Tuple[Optional[str], str]:
+    """
+    指定されたノートブック名/ID、またはデフォルトの共通ノートブック（気になったYouTube動画）を解決。
+    存在しなければ再利用または作成する。
+    """
+    if new_notebook:
+        nb_title = f"YouTube: {video_id or '動画'}"
+        if verbose:
+            print(f"📓 [1/5] 専用ノートブックを新規作成中: {nb_title}")
+        code, stdout, stderr = run_nlm_command(["notebook", "create", nb_title, "--json"])
+        if code != 0:
+            print(f"❌ ノートブック作成に失敗しました: {stderr}", file=sys.stderr)
+            return None, ""
+        try:
+            nb_info = json.loads(stdout)
+            return nb_info.get("notebook_id") or nb_info.get("id"), nb_title
+        except Exception:
+            m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", stdout)
+            return (m.group(1) if m else None), nb_title
+
+    target_name = notebook_target or os.getenv("NOTEBOOKLM_DEFAULT_NOTEBOOK", DEFAULT_COMMON_NOTEBOOK)
+
+    # 既存ノートブック一覧を取得
+    code, stdout, stderr = run_nlm_command(["notebook", "list", "--json"])
+    notebooks = []
+    if code == 0:
+        try:
+            notebooks = json.loads(stdout)
+        except Exception:
+            pass
+
+    # 1. UUID での完全一致チェック
+    for nb in notebooks:
+        if nb.get("id") == target_name:
+            if verbose:
+                print(f"📓 [1/5] 共通ノートブックを再利用: 「{nb.get('title')}」 (ID: {nb.get('id')})")
+            return nb.get("id"), nb.get("title", "")
+
+    # 2. タイトルでの完全一致
+    for nb in notebooks:
+        if nb.get("title") == target_name:
+            if verbose:
+                print(f"📓 [1/5] 共通ノートブックを再利用: 「{nb.get('title')}」 (ID: {nb.get('id')})")
+            return nb.get("id"), nb.get("title", "")
+
+    # 3. タイトルでの部分一致
+    for nb in notebooks:
+        if target_name.lower() in nb.get("title", "").lower():
+            if verbose:
+                print(f"📓 [1/5] 共通ノートブックを再利用: 「{nb.get('title')}」 (ID: {nb.get('id')})")
+            return nb.get("id"), nb.get("title", "")
+
+    # 4. 見つからなければ共通ノートブックを作成
+    if verbose:
+        print(f"📓 [1/5] 共通ノートブック「{target_name}」が存在しないため新規作成中...")
+    code, stdout, stderr = run_nlm_command(["notebook", "create", target_name, "--json"])
+    if code != 0:
+        print(f"❌ ノートブック作成に失敗しました: {stderr}", file=sys.stderr)
+        return None, ""
+    try:
+        nb_info = json.loads(stdout)
+        nb_id = nb_info.get("notebook_id") or nb_info.get("id")
+        return nb_id, target_name
+    except Exception:
+        m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", stdout)
+        return (m.group(1) if m else None), target_name
+
+
+def fetch_youtube_title(youtube_url: str) -> Optional[str]:
+    """YouTube oEmbed API を用いて動画タイトルを即座に取得（APIキー不要）"""
+    try:
+        import urllib.request
+        import urllib.parse
+        oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(youtube_url)}&format=json"
+        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("title")
+    except Exception:
+        return None
+
+
+def resolve_or_add_source(
+    nb_id: str,
+    youtube_url: str,
+    video_id: str,
+    verbose: bool = True,
+) -> Tuple[Optional[str], str]:
+    """
+    指定ノートブック内のソースを一覧取得し、既に該当YouTube動画が存在すれば再利用。
+    存在しなければ追加する。
+    """
+    yt_title = fetch_youtube_title(youtube_url) or ""
+
+    code, stdout, stderr = run_nlm_command(["source", "list", nb_id, "--json"])
+    sources = []
+    if code == 0:
+        try:
+            sources = json.loads(stdout)
+        except Exception:
+            pass
+
+    # 既存ソースから探す (url または title に video_id や yt_title が一致するか)
+    for s in sources:
+        s_url = s.get("url") or ""
+        s_title = s.get("title") or ""
+        # 1. URL または タイトルに video_id が含まれるか
+        matched = (s_url and video_id in s_url) or (s_title and video_id in s_title)
+        # 2. oEmbed で取得した動画タイトルと完全一致または部分一致するか
+        if not matched and yt_title and len(yt_title) > 3:
+            if yt_title.strip() == s_title.strip() or yt_title.strip() in s_title or s_title.strip() in yt_title:
+                matched = True
+
+        if matched:
+            if verbose:
+                print(f"📥 [2/5] 既存の動画ソースを検出（取り込み済みのためスキップ）:")
+                print(f"   ✓ ソースタイトル: {s_title}")
+                print(f"   ✓ Source ID: {s.get('id')}")
+            return s.get("id"), s_title
+
+    # 存在しない場合は新規追加
+    if verbose:
+        print("📥 [2/5] YouTube動画をノートブックに取り込み中（字幕・音声インデックス）...")
+    code, stdout, stderr = run_nlm_command(["source", "add", nb_id, "--url", youtube_url, "--json"], timeout=180)
+    if code != 0:
+        print(f"❌ ソース追加に失敗しました: {stderr}", file=sys.stderr)
+        return None, ""
+
+
+    source_id = None
+    source_title = ""
+    try:
+        src_info = json.loads(stdout)
+        source_id = src_info.get("id") or src_info.get("source_id")
+        source_title = src_info.get("title", "")
+    except Exception:
+        pass
+
+    if not source_id:
+        # source list を再取得して該当ソースを探す
+        c2, out2, _ = run_nlm_command(["source", "list", nb_id, "--json"])
+        if c2 == 0:
+            try:
+                sources2 = json.loads(out2)
+                for s in sources2:
+                    if (s.get("url") and video_id in s.get("url")) or (s.get("title") and video_id in s.get("title")):
+                        source_id = s.get("id")
+                        source_title = s.get("title", "")
+                        break
+                if not source_id and sources2:
+                    source_id = sources2[-1].get("id")
+                    source_title = sources2[-1].get("title", "")
+            except Exception:
+                pass
+
+    if verbose:
+        print(f"   ✓ 動画タイトル: {source_title or video_id}")
+        if source_id:
+            print(f"   ✓ Source ID: {source_id}")
+
+    return source_id, source_title
+
+
+# ==============================================================================
 # メインパイプライン
 # ==============================================================================
 def generate_youtube_blog_post(
@@ -495,6 +670,8 @@ def generate_youtube_blog_post(
     time_str: Optional[str] = None,
     start_str: Optional[str] = None,
     end_str: Optional[str] = None,
+    notebook_target: Optional[str] = None,
+    new_notebook: bool = False,
     custom_prompt: Optional[str] = None,
     output_dir: Optional[str] = None,
     optimize: bool = True,
@@ -522,53 +699,25 @@ def generate_youtube_blog_post(
             print(f" ⏱️ 対象時間帯: {time_label}")
         print("=" * 64)
 
-    # 1. ノートブック作成
-    nb_title = f"YouTube: {video_id}"
-    if focus_topic:
-        nb_title += f" - {focus_topic[:20]}"
-    elif time_label:
-        nb_title += f" - {time_label}"
-
-    if verbose:
-        print("📓 [1/5] NotebookLM に専用ノートブックを作成中...")
-    code, stdout, stderr = run_nlm_command(["notebook", "create", nb_title, "--json"])
-    if code != 0:
-        print(f"❌ ノートブック作成に失敗しました: {stderr}", file=sys.stderr)
-        return None
-
-    try:
-        nb_info = json.loads(stdout)
-        nb_id = nb_info.get("notebook_id") or nb_info.get("id")
-    except Exception:
-        uuid_match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", stdout)
-        nb_id = uuid_match.group(1) if uuid_match else None
-
+    # 1. ノートブック解決（共通ノートブックの再利用または新規）
+    nb_id, actual_nb_title = resolve_or_create_notebook(
+        notebook_target=notebook_target,
+        new_notebook=new_notebook,
+        video_id=video_id,
+        verbose=verbose,
+    )
     if not nb_id:
-        print(f"❌ ノートブックIDの取得に失敗しました: {stdout}", file=sys.stderr)
         return None
 
-    if verbose:
-        print(f"   ✓ Notebook ID: {nb_id}")
-
-    # 2. ソース（YouTube動画）の追加
-    if verbose:
-        print("📥 [2/5] YouTube動画をソースとして取り込み中（字幕・音声インデックス）...")
-    code, stdout, stderr = run_nlm_command(["source", "add", nb_id, "--url", clean_url, "--json"], timeout=180)
-    if code != 0:
-        print(f"❌ ソース追加に失敗しました: {stderr}", file=sys.stderr)
-        return None
-
-    source_title = ""
-    try:
-        src_info = json.loads(stdout)
-        source_title = src_info.get("title", "")
-    except Exception:
-        title_match = re.search(r"Added source:\s*(.+)", stdout)
-        if title_match:
-            source_title = title_match.group(1).strip()
-
-    if verbose:
-        print(f"   ✓ 動画タイトル: {source_title or video_id}")
+    # 2. ソース（YouTube動画）の解決（登録済みなら再利用・未登録なら追加）
+    source_id, source_title = resolve_or_add_source(
+        nb_id=nb_id,
+        youtube_url=clean_url,
+        video_id=video_id,
+        verbose=verbose,
+    )
+    if not source_id and verbose:
+        print("⚠️ ソースIDの取得に失敗しましたが、ノートブック全体を対象に続行します。")
 
     # 3. レポート（ブログ記事ドラフト）生成
     if verbose:
@@ -607,17 +756,22 @@ def generate_youtube_blog_post(
     )
     prompt_to_use = custom_prompt if custom_prompt else default_prompt
 
-    code, stdout, stderr = run_nlm_command([
+    report_cmd = [
         "report", "create", nb_id,
         "--format", "Create Your Own",
         "--prompt", prompt_to_use,
         "--language", "ja",
         "--confirm",
         "--json",
-    ])
+    ]
+    if source_id:
+        report_cmd.extend(["--source-ids", source_id])
+
+    code, stdout, stderr = run_nlm_command(report_cmd)
     if code != 0:
         print(f"❌ レポート生成開始に失敗しました: {stderr}", file=sys.stderr)
         return None
+
 
     # 4. 生成完了のポーリング待機
     if verbose:
@@ -787,6 +941,18 @@ def main():
         default=None,
     )
 
+    # ノートブック管理オプション
+    parser.add_argument(
+        "--notebook", "-nb",
+        help="使用するNotebookLMノートブック名またはID（デフォルト: '気になったYouTube動画'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--new-notebook",
+        action="store_true",
+        help="共通ノートブックを使わず、動画専用の新規ノートブックを新たに作成する",
+    )
+
     # 推敲・その他オプション
     parser.add_argument(
         "--refine", "-r",
@@ -835,12 +1001,15 @@ def main():
             time_str=args.time,
             start_str=args.start,
             end_str=args.end,
+            notebook_target=args.notebook,
+            new_notebook=args.new_notebook,
             custom_prompt=args.prompt,
             output_dir=args.output_dir,
             optimize=not args.no_optimize,
             max_revisions=args.max_revisions,
             verbose=True,
         )
+
 
 
 if __name__ == "__main__":
