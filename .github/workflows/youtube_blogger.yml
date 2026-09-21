@@ -131,35 +131,38 @@ jobs:
           fi
 
       - name: Commit and push changes to yagibrary
+        id: commit_push
         working-directory: yagibrary
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config core.quotepath false
           git status
           if [ -n "$(git status --porcelain src/content/posts)" ]; then
+            POST_FILE=$(git status --porcelain src/content/posts | head -n 1 | cut -c4- | tr -d '"')
+            POST_BASENAME=$(basename "$POST_FILE")
             git add src/content/posts
             TODAY=$(date +'%Y-%m-%d')
-            POST_FILE=$(git status --porcelain src/content/posts | head -n 1 | awk '{print $2}')
-            POST_BASENAME=$(basename "$POST_FILE")
             git commit -m "post(youtube): auto-generate blog article for ${TODAY} (${POST_BASENAME})"
             git pull --rebase origin master
             git push origin master
             echo "✅ Successfully pushed new YouTube article to yagibrary!"
-            echo "POST_BASENAME=$POST_BASENAME" >> $GITHUB_ENV
+            echo "post_basename=$POST_BASENAME" >> "$GITHUB_OUTPUT"
           else
             echo "ℹ️ No new articles were generated to commit."
           fi
 
       - name: Comment and close issue (Issue Ops)
-        if: github.event_name == 'issues' && env.POST_BASENAME != ''
+        if: github.event_name == 'issues' && steps.commit_push.outputs.post_basename != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          POST_BASENAME: ${{ steps.commit_push.outputs.post_basename }}
         run: |
           SLUG=$(echo "${POST_BASENAME}" | sed 's/\.md$//')
           ARTICLE_URL="https://yagibrary.com/posts/${SLUG}/"
 
-          COMMENT="## 🎬 ブログ記事の自動生成が完了しました！\n\n- **記事ファイル**: \`${POST_BASENAME}\`\n- **公開URL**: ${ARTICLE_URL}\n\nTypeSafe Jev による多面品質診断と Gemini による自律推敲を経て、リポジトリ \`yagibrary\` に自動コミット＆プッシュされました。"
+          COMMENT=$(printf '## 🎬 ブログ記事の自動生成が完了しました！\n\n- **記事ファイル**: `%s`\n- **公開URL**: %s\n\nTypeSafe Jev による多面品質診断と Gemini による自律推敲を経て、リポジトリ `yagibrary` に自動コミット＆プッシュされました。\n' "$POST_BASENAME" "$ARTICLE_URL")
 
           gh issue comment "$ISSUE_NUMBER" --body "$COMMENT"
           gh issue close "$ISSUE_NUMBER" --reason "completed"
