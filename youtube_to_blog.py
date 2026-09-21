@@ -389,6 +389,26 @@ def format_markdown_for_yagibrary(
     # 太字置換: **text** -> <strong>text</strong>
     body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body)
 
+    # 数式ブロック（Display Math）の正規化
+    # 1. 1行で記述された $$ ... $$ を独立行に展開し前後に空行を確保
+    body_math_lines = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
+            math_content = stripped[2:-2].strip()
+            # 数式内部に紛れ込んだ HTML タグを除去
+            math_content = re.sub(r"</?[a-zA-Z]+[^>]*>", "", math_content)
+            body_math_lines.append("")
+            body_math_lines.append("$$")
+            body_math_lines.append(math_content)
+            body_math_lines.append("$$")
+            body_math_lines.append("")
+        else:
+            body_math_lines.append(line)
+    body = "\n".join(body_math_lines)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
     # 概要文（summary）の自動抽出（最初の段落）
     summary = ""
     for para in body.split("\n\n"):
