@@ -1001,7 +1001,135 @@ def main():
         default=None,
     )
 
+def parse_text_for_youtube_args(text: str) -> Dict[str, Any]:
+    """Issue のタイトルや本文などのテキストから YouTube URL とパラメータを抽出"""
+    res = {
+        "youtube_url": None,
+        "focus": None,
+        "time": None,
+        "start": None,
+        "end": None,
+    }
+    # 1. YouTube URL 抽出
+    yt_match = re.search(r"https?://(?:www\.)?(?:youtube\.com/watch\?[^\s\)\>]+|youtu\.be/[0-9A-Za-z_-]{11}[^\s\)\>]*)", text)
+    if yt_match:
+        res["youtube_url"] = yt_match.group(0).rstrip(".,;")
+
+    # 2. focus / フォーカス
+    focus_match = re.search(r"(?:focus|フォーカス|テーマ|セクション|注目)\s*[:：]\s*(.+)", text, re.IGNORECASE)
+    if focus_match:
+        res["focus"] = focus_match.group(1).splitlines()[0].strip()
+
+    # 3. time / 時間
+    time_match = re.search(r"(?:time|時間帯?|区間)\s*[:：]\s*([0-9:〜~to\s-]+)", text, re.IGNORECASE)
+    if time_match:
+        res["time"] = time_match.group(1).splitlines()[0].strip()
+
+    # 4. start / 開始
+    start_match = re.search(r"(?:start|開始)\s*[:：]\s*([0-9:]+)", text, re.IGNORECASE)
+    if start_match:
+        res["start"] = start_match.group(1).splitlines()[0].strip()
+
+    # 5. end / 終了
+    end_match = re.search(r"(?:end|終了)\s*[:：]\s*([0-9:]+)", text, re.IGNORECASE)
+    if end_match:
+        res["end"] = end_match.group(1).splitlines()[0].strip()
+
+    return res
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="YouTube動画から NotebookLM × TypeSafe Jev × Gemini でブログ記事を自動生成・推敲するツール"
+    )
+    parser.add_argument("url_or_file", nargs="?", help="YouTube動画のURL、または既存記事のファイル名/パス（--refine時）")
+
+    # テキスト解析オプション（GitHub Issue 等の自動化用）
+    parser.add_argument(
+        "--from-text",
+        help="Issueタイトルや本文などの自然文からYouTube URLやパラメータを自動抽出して実行",
+        default=None,
+    )
+
+    # フォーカス・範囲指定
+    parser.add_argument(
+        "--focus", "-f",
+        help="動画内の特定セクション・テーマ・講演者名に絞って執筆（例: 'Andy StromingerのCelestial Holography'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--time", "-t",
+        help="対象時間帯の指定（例: '15:30-45:00', '01:15:00-01:45:00'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--start",
+        help="開始時間の指定（例: '15:30', '930'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="終了時間の指定（例: '45:00', '2700'）",
+        default=None,
+    )
+
+    # ノートブック管理オプション
+    parser.add_argument(
+        "--notebook", "-nb",
+        help="使用するNotebookLMノートブック名またはID（デフォルト: '気になったYouTube動画'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--new-notebook",
+        action="store_true",
+        help="共通ノートブックを使わず、動画専用の新規ノートブックを新たに作成する",
+    )
+
+    # 推敲・その他オプション
+    parser.add_argument(
+        "--refine", "-r",
+        action="store_true",
+        help="指定された既存記事ファイルをJev×Geminiで自律推敲・改善する",
+    )
+    parser.add_argument(
+        "--no-optimize",
+        action="store_true",
+        help="Jev×Geminiの推敲ループをスキップし、NotebookLMの初稿をそのまま保存する",
+    )
+    parser.add_argument(
+        "--max-revisions",
+        type=int,
+        default=2,
+        help="最大リライト回数（デフォルト: 2）",
+    )
+    parser.add_argument(
+        "--prompt", "-p",
+        help="記事生成の追加カスタムプロンプト",
+        default=None,
+    )
+    parser.add_argument(
+        "--output-dir", "-o",
+        help="記事の保存先ディレクトリ（デフォルト: yagibrary/src/content/posts）",
+        default=None,
+    )
+
     args = parser.parse_args()
+
+    # --from-text モードの場合
+    if args.from_text:
+        parsed_args = parse_text_for_youtube_args(args.from_text)
+        if not parsed_args["youtube_url"]:
+            print("❌ テキスト内からYouTube動画のURLを検出できませんでした。", file=sys.stderr)
+            sys.exit(1)
+        args.url_or_file = parsed_args["youtube_url"]
+        if not args.focus and parsed_args["focus"]:
+            args.focus = parsed_args["focus"]
+        if not args.time and parsed_args["time"]:
+            args.time = parsed_args["time"]
+        if not args.start and parsed_args["start"]:
+            args.start = parsed_args["start"]
+        if not args.end and parsed_args["end"]:
+            args.end = parsed_args["end"]
 
     if not args.url_or_file:
         parser.print_help()
@@ -1015,7 +1143,7 @@ def main():
         for f in resolved:
             refine_existing_file(f, max_revisions=args.max_revisions)
     else:
-        generate_youtube_blog_post(
+        out_path = generate_youtube_blog_post(
             youtube_url=args.url_or_file,
             focus_topic=args.focus,
             time_str=args.time,
@@ -1030,7 +1158,13 @@ def main():
             verbose=True,
         )
 
+        # GitHub Actions output 対応
+        if out_path and "GITHUB_OUTPUT" in os.environ:
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh_out:
+                gh_out.write(f"post_path={out_path}\n")
+                gh_out.write(f"post_name={os.path.basename(out_path)}\n")
 
 
 if __name__ == "__main__":
     main()
+

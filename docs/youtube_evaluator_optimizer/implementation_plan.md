@@ -1,31 +1,46 @@
-# YouTube記事化 Evaluator-Optimizer（自律推敲ループ）実装計画
+# YouTube自動記事化 GitHub Actions ワークフロー実装計画
 
-YouTube動画から NotebookLM 経由で生成されたブログ記事に対して、TypeSafe Jev による品質採点と Gemini によるフィードバック駆動型リライトループ（Evaluator-Optimizer）を導入し、客観的サマリーにとどまらない高品質な解説記事（合格水準: 9.2〜10点以上）へ自動改善する仕組みを構築します。
+YouTube動画のURLやセクション・時間指定からブログ記事を自動生成・推敲し、`yagibrary` に自動公開する GitHub Actions ワークフローを構築します。
 
-## ユーザー確認事項
-- リライトエンジンとして、既存パイプラインと同様に Google Gemini（`gemini-2.5-flash` / `gemini-1.5-pro` 等）を使用します（`.env.local` の `GEMINI_API_KEY` を利用）。
-- デフォルトで最大2回のリビジョンループ（Round 1: NotebookLM初稿 ➔ Round 2〜3: Gemini推敲）を行い、合格スコアに達した時点で完了します。
+## 1. 概要と目標
+- **手動実行 (workflow_dispatch)**: GitHub の Actions 画面から URL・フォーカス・時間帯を指定してワンクリック実行。
+- **Issue Ops (Issue トリガー)**: GitHub Issue を作成し、タイトルまたは本文に YouTube URL（およびフォーカス指定）を記載するだけで完全自動記事化。
+- **NotebookLM 認証の CI 連携**: GitHub Secrets (`NOTEBOOKLM_COOKIES`) を経由して Ubuntu ランナー上で `nlm` CLI をヘッドレス動作させる。
+- **yagibrary への自動反映**: 記事生成・推敲完了後、`yagibrary` リポジトリに自動コミット＆プッシュし、CloudFront/Astroの自動ビルド＆デプロイを発火。
+- **Issue への自動フィードバック**: Issue 起因の場合は、生成された記事のタイトル・要約・リンクを自動コメントして Issue を自動クローズ。
 
-## 変更内容
+---
 
-### `playground-Jev`
+## 2. 変更・追加対象ファイル
 
-#### [MODIFY] [youtube_to_blog.py](file:///c:/Users/user/Dev/playground-Jev/youtube_to_blog.py)
-- **Gemini クライアントの統合**: `google.genai` を用いたリライト機能の実装。
-- **Jev 検証モジュールの統合**: `score_post.py` の `verify_post_with_jev` を呼び出し。
-- **リライト関数 `rewrite_youtube_blog_post_with_gemini` の追加**:
-  - Jev の診断フィードバック（`need_pedagogical_steps`, `need_sharp_opinion`, `need_math_details`, リスク値）をプロンプトに動的注入。
-  - 元動画の事実関係（トピックやタイムライン）を保持しつつ、「行間・前提知識の解説」「筆者独自オピニオン」「数理の具体化」を加筆推敲。
-- **Evaluator-Optimizer ループ `refine_youtube_blog_post` の追加**:
-  - NotebookLM ドラフト取得 ➔ Jev 採点 ➔ 足切り判定 ➔ Gemini リライト ➔ Jev 再採点。
-  - 記事末尾に推敲プロセスレポート（自律改善履歴）を付加。
-- **CLI オプションの拡充**:
-  - `--optimize` / `--no-optimize`: 自動推敲ループの有効/無効切り替え（デフォルト: 有効）。
-  - `--max-revisions`: 最大リライト回数（デフォルト: 2）。
+### 1. [NEW] [youtube_blogger.yml](file:///c:/Users/user/Dev/playground-Jev/.github/workflows/youtube_blogger.yml)
+- `workflow_dispatch` および `issues` イベントをハンドリングする GitHub Actions 定義ファイル。
+- `uv` による `notebooklm-mcp-cli` のインストール、Cookie復元、`youtube_to_blog.py` の実行、Git コミット＆プッシュ、Issue への返信を定義。
 
-## 検証計画
+### 2. [NEW] [export_cookies.py](file:///c:/Users/user/Dev/playground-Jev/export_cookies.py)
+- ローカルですでに認証済みの `~/.notebooklm-mcp-cli/profiles/default/cookies.json` を読み出し、GitHub Secrets に貼り付け可能な形式で出力・クリップボードにコピーする便利な支援スクリプト。
 
-### 自動・CLI検証
-1. 先ほどの Strings 2026 記事（初稿 6.33点）をインプットとしてリライトを実行し、Jev スコアが合格基準（9.2以上または10点以上）に向上することを確認。
-2. 記事 [2026-09-21-strings2026-shanghai-highlights.md](file:///c:/Users/user/Dev/yagibrary/src/content/posts/2026-09-21-strings2026-shanghai-highlights.md) を推敲済み原稿で上書き更新。
-3. `python score_post.py strings2026` で最終スコアを確認。
+### 3. [MODIFY] [youtube_to_blog.py](file:///c:/Users/user/Dev/playground-Jev/youtube_to_blog.py)
+- Issue 本文のテキストから YouTube URL や `--focus`、`--time` などの引数を抽出・解釈するパーサー機能（`--from-text` または Issue 解析モード）を追加。
+
+---
+
+## 3. 必要な GitHub Secrets
+
+以下の Secrets を `playground-Jev` リポジトリに設定します：
+
+| Secret名 | 用途 | 既存設定状況 |
+| :--- | :--- | :---: |
+| `GH_PAT` | `yagibrary` へのアクセス・コミット権限 | 設定済み |
+| `TYPESAFE_API_KEY` | TypeSafe Jev 多面品質評価 API | 設定済み |
+| `GEMINI_API_KEY` | Gemini 自律推敲リライト API | 設定済み |
+| `NOTEBOOKLM_COOKIES` | NotebookLM の認証 Cookie（JSON文字列） | **新規登録が必要** |
+
+---
+
+## 4. 検証手順
+
+1. ワークフローファイルの構文検証（`actionlint` または YAML チェック）。
+2. `export_cookies.py` によるローカル Cookie の正常読み出し確認。
+3. `youtube_to_blog.py` のテキスト解析引数の単体動作テスト。
+4. コミット＆プッシュし、GitHub Secrets の設定手順を案内。

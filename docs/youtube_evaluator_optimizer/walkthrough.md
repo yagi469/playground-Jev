@@ -84,3 +84,35 @@ YouTube動画のブログ記事化パイプラインにおいて、NotebookLMの
 4. **新規ノートブック作成オプション（後方互換）**:
    - あえて専用ノートブックを作りたい場合は `--new-notebook` フラグで対応可能。
 
+---
+
+## 7. GitHub Actions による完全自動化（Web手動実行 ＆ Issue Ops）
+
+クラウド上（GitHub Actions）で YouTube 動画から記事を生成・推敲し、`yagibrary` に自動公開するワークフローを構築しました。
+
+### ワークフロー概要
+- **定義ファイル**: [.github/workflows/youtube_blogger.yml](file:///c:/Users/user/Dev/playground-Jev/.github/workflows/youtube_blogger.yml)
+
+### 2系統の実行トリガー
+1. **Web手動実行（`workflow_dispatch`）**:
+   - GitHub リポジトリ（`playground-Jev`）の Actions タブから、**「YouTube Video to Blog Post」** ワークフローを選択。
+   - `youtube_url`（必須）、`focus`（任意）、`time`（任意）を入力して「Run workflow」ボタンを押すだけで完全自動実行。
+2. **Issue Ops（`issues` トリガー）**:
+   - GitHub の Issue を作成し、タイトルまたは本文に YouTube URL を貼るだけで自動検知してパイプラインが起動。
+   - 例:
+     ```markdown
+     https://www.youtube.com/watch?v=mIpgA0QD7ys
+     focus: Strominger氏のCelestial Holography
+     time: 15:30-45:00
+     ```
+   - 記事生成・推敲完了後、自動で `yagibrary` にプッシュされ、Issue に生成記事へのリンクがコメントされて自動クローズされます。
+
+### セットアップ（GitHub Secrets）
+ローカルの認証情報を GitHub に一度だけ登録します：
+1. `python export_cookies.py` を実行（クリップボードに自動コピーされます）。
+2. GitHub リポジトリの **Settings ➔ Secrets and variables ➔ Actions** を開く。
+3. `New repository secret` をクリックし、以下を登録：
+   - Name: `NOTEBOOKLM_COOKIES`
+   - Secret: コピーした JSON 文字列
+
+
