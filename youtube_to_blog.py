@@ -7,10 +7,21 @@ YouTube動画のURLから NotebookLM を経由して、
 さらに TypeSafe Jev × Gemini による自律推敲ループ（Evaluator-Optimizer）で
 合格基準（9.2〜10点以上）までブラッシュアップして yagibrary に保存するツール。
 
+長尺動画の特定セクション・時間帯（秒数・タイムスタンプ）指定に対応。
+
 使用例:
+  # 動画全体を記事化
   python youtube_to_blog.py "https://www.youtube.com/watch?v=mIpgA0QD7ys"
+
+  # 特定セクション（講演者・トピック）にフォーカスしてディープに記事化
+  python youtube_to_blog.py "https://www.youtube.com/watch?v=mIpgA0QD7ys" --focus "Andy StromingerのCelestial Holography"
+
+  # 特定の時間帯（タイムスタンプ）だけを記事化
+  python youtube_to_blog.py "https://www.youtube.com/watch?v=mIpgA0QD7ys" --time "15:30-45:00"
+  python youtube_to_blog.py "https://www.youtube.com/watch?v=mIpgA0QD7ys" --start "15:30" --end "45:00" --focus "ストロミンジャーの講演"
+
+  # 既存記事をJev×Geminiで再推敲
   python youtube_to_blog.py --refine strings2026
-  python youtube_to_blog.py "https://youtu.be/xxxx" --no-optimize
 """
 
 import os
@@ -64,6 +75,82 @@ def extract_youtube_id(url: str) -> Optional[str]:
     return None
 
 
+def parse_time_to_seconds(t_str: Optional[str]) -> Optional[int]:
+    """
+    "15:30", "01:15:30", "930", "15m30s" などの文字列表現を秒数に変換
+    """
+    if not t_str:
+        return None
+    t_str = str(t_str).strip().lower()
+
+    # 1h15m30s または 15m30s 形式
+    m = re.match(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", t_str)
+    if m and any(m.groups()):
+        h = int(m.group(1) or 0)
+        minutes = int(m.group(2) or 0)
+        s = int(m.group(3) or 0)
+        return h * 3600 + minutes * 60 + s
+
+    # HH:MM:SS または MM:SS
+    parts = t_str.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        elif len(parts) == 1 and parts[0].isdigit():
+            return int(parts[0])
+    except ValueError:
+        pass
+    return None
+
+
+def format_seconds_to_time(sec: int) -> str:
+    """秒数を HH:MM:SS または MM:SS 形式に変換"""
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def parse_time_range(
+    time_str: Optional[str],
+    start_str: Optional[str] = None,
+    end_str: Optional[str] = None,
+) -> Tuple[Optional[int], Optional[int], str]:
+    """
+    --time "15:30-45:00" または --start / --end から (start_sec, end_sec, label) を解決
+    """
+    start_sec = None
+    end_sec = None
+
+    if time_str:
+        parts = re.split(r"[-~〜to]", time_str)
+        if len(parts) >= 2:
+            start_sec = parse_time_to_seconds(parts[0])
+            end_sec = parse_time_to_seconds(parts[1])
+        elif len(parts) == 1:
+            start_sec = parse_time_to_seconds(parts[0])
+
+    if start_str:
+        start_sec = parse_time_to_seconds(start_str)
+    if end_str:
+        end_sec = parse_time_to_seconds(end_str)
+
+    # ラベル生成
+    label = ""
+    if start_sec is not None and end_sec is not None:
+        label = f"{format_seconds_to_time(start_sec)} 〜 {format_seconds_to_time(end_sec)}"
+    elif start_sec is not None:
+        label = f"{format_seconds_to_time(start_sec)} 以降"
+    elif end_sec is not None:
+        label = f"開始 〜 {format_seconds_to_time(end_sec)}"
+
+    return start_sec, end_sec, label
+
+
 def run_nlm_command(cmd_args: list, timeout: int = 120) -> Tuple[int, str, str]:
     """nlm CLI コマンドを実行"""
     full_cmd = ["nlm"] + cmd_args
@@ -87,6 +174,8 @@ def rewrite_youtube_post_with_gemini(
     revision_round: int,
     video_title: str = "",
     youtube_url: str = "",
+    focus_topic: Optional[str] = None,
+    time_label: Optional[str] = None,
 ) -> str:
     """Jev のフィードバックに基づき、動画解説記事を自律推敲・加筆リライト"""
     client = get_gemini_client()
@@ -134,6 +223,14 @@ def rewrite_youtube_post_with_gemini(
             "- 全体的に高いクオリティです。さらに各節の論理展開を磨き、読者を強く引き込む名論考に仕上げてください。"
         )
 
+    scope_constraint = ""
+    if focus_topic or time_label:
+        scope_constraint = f"""
+【フォーカス範囲の厳守】
+対象セクション / 時間帯: {focus_topic or ''} {f'({time_label})' if time_label else ''}
+※この指定範囲から逸脱せず、対象テーマの数理と議論のみを極限まで深く濃密に論じてください。他の無関係なセクションには触れないでください。
+"""
+
     guidelines = "\n".join(focus_instructions)
 
     prompt = f"""
@@ -141,7 +238,7 @@ def rewrite_youtube_post_with_gemini(
 
 以下は、YouTube動画「{video_title}」({youtube_url}) の書き起こしを元に作成された前回のドラフト記事です。
 このドラフトに対し、AI採点エージェント（TypeSafe Jev）から厳しい品質改善指示が出ています。
-
+{scope_constraint}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【Jev 診断結果】
 ・総合スコア: {feedback_metrics.get('total_score', 0.0):.2f} / 12.0
@@ -196,6 +293,8 @@ def refine_youtube_blog_post(
     initial_draft: str,
     video_title: str = "",
     youtube_url: str = "",
+    focus_topic: Optional[str] = None,
+    time_label: Optional[str] = None,
     max_revisions: int = 2,
     verbose: bool = True,
 ) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
@@ -204,7 +303,7 @@ def refine_youtube_blog_post(
     NotebookLM 初稿 ➔ Jev 採点 ➔ 足切りなら Gemini リライト ➔ Jev 再採点
     """
     current_draft = extract_post_content(initial_draft, strip_frontmatter=True)
-    
+
     # Step 1: 初稿検証
     metrics = verify_post_with_jev(current_draft, round_num=1, verbose=verbose)
     history = [metrics]
@@ -229,6 +328,8 @@ def refine_youtube_blog_post(
             revision_round=round_count,
             video_title=video_title,
             youtube_url=youtube_url,
+            focus_topic=focus_topic,
+            time_label=time_label,
         )
 
         metrics = verify_post_with_jev(current_draft, round_num=round_count, verbose=verbose)
@@ -255,6 +356,9 @@ def format_markdown_for_yagibrary(
     youtube_url: str,
     video_id: str,
     source_title: str = "",
+    focus_topic: Optional[str] = None,
+    time_label: Optional[str] = None,
+    start_seconds: Optional[int] = None,
     quality_report: Optional[Dict[str, Any]] = None,
     history: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str, str]:
@@ -262,7 +366,7 @@ def format_markdown_for_yagibrary(
     Markdown本文を yagibrary 仕様に整形
     - title, date, summary, tags の Frontmatter 構築
     - **太字** を <strong>太字</strong> に置換
-    - YouTube動画リンクの挿入
+    - YouTube動画リンク（タイムスタンプ対応）の挿入
     - Evaluator-Optimizer 採点レポートの付加
     """
     lines = content_body.strip().splitlines()
@@ -297,6 +401,9 @@ def format_markdown_for_yagibrary(
 
     # タグの選定
     tags = ["YouTube解説", "動画要約"]
+    if focus_topic:
+        tags.append(focus_topic.split()[0].replace("の", ""))
+
     title_lower = (title + " " + body[:1000]).lower()
     if any(k in title_lower for k in ["弦理論", "超弦理論", "string", "ホログラフィ", "量子重力"]):
         tags.extend(["物理学", "超弦理論", "数理物理", "ホログラフィ"])
@@ -307,7 +414,26 @@ def format_markdown_for_yagibrary(
     elif any(k in title_lower for k in ["ai", "llm", "エージェント", "機械学習"]):
         tags.extend(["AI", "LLM", "技術解説"])
 
+    # タグの重複排除（順序保持）
+    seen_tags = set()
+    cleaned_tags = []
+    for t in tags:
+        t_clean = t.strip()
+        if t_clean and t_clean not in seen_tags:
+            seen_tags.add(t_clean)
+            cleaned_tags.append(t_clean)
+
     now_jst = datetime.now(JST).strftime("%Y-%m-%dT%H:%M:00+09:00")
+
+    # 再生リンクの作成（秒数指定があれば &t=... を付与）
+    jump_url = youtube_url
+    if start_seconds is not None and start_seconds > 0:
+        sep = "&" if "?" in youtube_url else "?"
+        jump_url = f"{youtube_url}{sep}t={start_seconds}s"
+
+    scope_meta = ""
+    if focus_topic or time_label:
+        scope_meta = f"""- <strong>フォーカス対象</strong>: {focus_topic or '指定セクション'} {f'({time_label})' if time_label else ''}\n"""
 
     # 採点レポートセクション
     meta_section = ""
@@ -336,7 +462,7 @@ def format_markdown_for_yagibrary(
         "title": title,
         "date": now_jst,
         "summary": summary,
-        "tags": tags,
+        "tags": cleaned_tags,
     }
     frontmatter_yaml = yaml.dump(
         frontmatter_dict,
@@ -351,8 +477,8 @@ def format_markdown_for_yagibrary(
 
 ## 元動画情報
 - <strong>動画タイトル</strong>: {source_title or title}
-- <strong>動画URL</strong>: [YouTubeで視聴する（{youtube_url}）]({youtube_url})
-
+- <strong>動画URL</strong>: [YouTubeで視聴する（{jump_url}）]({jump_url})
+{scope_meta}
 ---
 
 {body}{meta_section}
@@ -365,6 +491,10 @@ def format_markdown_for_yagibrary(
 # ==============================================================================
 def generate_youtube_blog_post(
     youtube_url: str,
+    focus_topic: Optional[str] = None,
+    time_str: Optional[str] = None,
+    start_str: Optional[str] = None,
+    end_str: Optional[str] = None,
     custom_prompt: Optional[str] = None,
     output_dir: Optional[str] = None,
     optimize: bool = True,
@@ -378,16 +508,30 @@ def generate_youtube_blog_post(
         return None
 
     clean_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # 時間範囲の解析
+    start_sec, end_sec, time_label = parse_time_range(time_str, start_str, end_str)
+
     if verbose:
         print("\n" + "=" * 64)
         print(" 🎬 YouTube to Blog Post パイプライン (NotebookLM × Jev × Gemini)")
         print(f" 対象URL: {clean_url} (ID: {video_id})")
+        if focus_topic:
+            print(f" 🎯 フォーカスセクション: {focus_topic}")
+        if time_label:
+            print(f" ⏱️ 対象時間帯: {time_label}")
         print("=" * 64)
 
     # 1. ノートブック作成
+    nb_title = f"YouTube: {video_id}"
+    if focus_topic:
+        nb_title += f" - {focus_topic[:20]}"
+    elif time_label:
+        nb_title += f" - {time_label}"
+
     if verbose:
         print("📓 [1/5] NotebookLM に専用ノートブックを作成中...")
-    code, stdout, stderr = run_nlm_command(["notebook", "create", f"YouTube: {video_id}", "--json"])
+    code, stdout, stderr = run_nlm_command(["notebook", "create", nb_title, "--json"])
     if code != 0:
         print(f"❌ ノートブック作成に失敗しました: {stderr}", file=sys.stderr)
         return None
@@ -430,11 +574,36 @@ def generate_youtube_blog_post(
     if verbose:
         print("✍️ [3/5] NotebookLM で初期ドラフトを執筆中...")
 
+    # プロンプトの組み立て
+    scope_instruction = ""
+    if focus_topic and time_label:
+        scope_instruction = (
+            f"\n【最重要：対象範囲の限定】\n"
+            f"この動画のうち、以下の指定セクション・時間帯の内容に完全にフォーカスして執筆してください：\n"
+            f"👉 対象: {focus_topic}（動画時間: {time_label}）\n"
+            f"※他の時間帯や無関係な講演・雑談には一切触れず、この区間で語られた核心的な数理・主張・議論のハイライトだけを極限まで深く濃密に掘り下げてください。"
+        )
+    elif focus_topic:
+        scope_instruction = (
+            f"\n【最重要：対象セクションの限定】\n"
+            f"この動画（書き起こし）の中から、以下のセクション・テーマに完全にフォーカスして執筆してください：\n"
+            f"👉 対象テーマ / 講演者: {focus_topic}\n"
+            f"※動画内の他の話題には一切触れず、このテーマについて語られた数理・アイデア・物理的意義のみを極限まで深く濃密に掘り下げてください。"
+        )
+    elif time_label:
+        scope_instruction = (
+            f"\n【最重要：対象時間帯の限定】\n"
+            f"この動画のうち、以下の再生時間帯の内容に完全にフォーカスして執筆してください：\n"
+            f"👉 対象時間帯: {time_label}\n"
+            f"※この時間帯以外の内容には触れず、この区間で語られた議論・数理・ポイントを徹底的に深く掘り下げてください。"
+        )
+
     default_prompt = (
-        "このYouTube動画の書き起こしを元に、知的好奇心を持つ読者に向けて、"
-        "動画の全体像と核心となるアイデア、議論のハイライト、重要なタイムラインやキーワードを丁寧に解説する"
-        "ハイクオリティなブログ記事（Markdown形式）を作成してください。"
-        "単なる箇条書きの要約ではなく、話者が伝えたかった熱量や本質、読者が深く理解できる論理的な構成にしてください。"
+        f"このYouTube動画の書き起こしを元に、知的好奇心を持つ読者に向けて、"
+        f"核心となるアイデア、議論のハイライト、重要な数理やキーワードを丁寧に解説する"
+        f"ハイクオリティなブログ記事（Markdown形式）を作成してください。"
+        f"{scope_instruction}\n"
+        f"単なる箇条書きの要約ではなく、話者が伝えたかった熱量や本質、読者が深く理解できる論理的な構成にしてください。"
     )
     prompt_to_use = custom_prompt if custom_prompt else default_prompt
 
@@ -503,6 +672,8 @@ def generate_youtube_blog_post(
             initial_draft=raw_report,
             video_title=source_title,
             youtube_url=clean_url,
+            focus_topic=focus_topic,
+            time_label=time_label,
             max_revisions=max_revisions,
             verbose=verbose,
         )
@@ -510,13 +681,26 @@ def generate_youtube_blog_post(
     # Astro向け整形
     final_post, title, summary = format_markdown_for_yagibrary(
         final_body, clean_url, video_id, source_title=source_title,
+        focus_topic=focus_topic, time_label=time_label, start_seconds=start_sec,
         quality_report=final_metrics, history=history,
     )
 
     # 保存先ファイルの決定
     save_dir = output_dir if output_dir else YAGIBRARY_POSTS_DIR
     today_str = datetime.now(JST).strftime("%Y-%m-%d")
-    filename = f"{today_str}-youtube-{video_id}.md"
+
+    # スラッグの生成（トピックや時間帯があればファイル名に反映）
+    slug_suffix = ""
+    if focus_topic:
+        clean_focus = re.sub(r"[^\w\-]", "-", focus_topic.lower()).strip("-")
+        clean_focus = re.sub(r"-+", "-", clean_focus)[:30]
+        slug_suffix = f"-{clean_focus}"
+    elif time_label:
+        clean_time = re.sub(r"[^\w\-]", "-", time_label.lower()).strip("-")
+        clean_time = re.sub(r"-+", "-", clean_time)[:20]
+        slug_suffix = f"-{clean_time}"
+
+    filename = f"{today_str}-youtube-{video_id}{slug_suffix}.md"
     target_filepath = os.path.join(save_dir, filename)
 
     os.makedirs(save_dir, exist_ok=True)
@@ -580,6 +764,30 @@ def main():
         description="YouTube動画から NotebookLM × TypeSafe Jev × Gemini でブログ記事を自動生成・推敲するツール"
     )
     parser.add_argument("url_or_file", nargs="?", help="YouTube動画のURL、または既存記事のファイル名/パス（--refine時）")
+
+    # フォーカス・範囲指定
+    parser.add_argument(
+        "--focus", "-f",
+        help="動画内の特定セクション・テーマ・講演者名に絞って執筆（例: 'Andy StromingerのCelestial Holography'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--time", "-t",
+        help="対象時間帯の指定（例: '15:30-45:00', '01:15:00-01:45:00'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--start",
+        help="開始時間の指定（例: '15:30', '930'）",
+        default=None,
+    )
+    parser.add_argument(
+        "--end",
+        help="終了時間の指定（例: '45:00', '2700'）",
+        default=None,
+    )
+
+    # 推敲・その他オプション
     parser.add_argument(
         "--refine", "-r",
         action="store_true",
@@ -598,7 +806,7 @@ def main():
     )
     parser.add_argument(
         "--prompt", "-p",
-        help="記事生成のカスタムプロンプト（例: '理系学部生向けにわかりやすく解説して'）",
+        help="記事生成の追加カスタムプロンプト",
         default=None,
     )
     parser.add_argument(
@@ -623,6 +831,10 @@ def main():
     else:
         generate_youtube_blog_post(
             youtube_url=args.url_or_file,
+            focus_topic=args.focus,
+            time_str=args.time,
+            start_str=args.start,
+            end_str=args.end,
             custom_prompt=args.prompt,
             output_dir=args.output_dir,
             optimize=not args.no_optimize,

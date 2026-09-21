@@ -4,4 +4,5 @@
 - [x] `youtube_to_blog.py` に Evaluator-Optimizer（Jev診断 ➔ Geminiリライトループ）を実装 <!-- id: 1 -->
 - [x] 先ほどの Strings 2026 記事を対象に自律推敲を実行し、スコア改善を検証 <!-- id: 2 -->
 - [x] 改善後の記事を `yagibrary` に反映 <!-- id: 3 -->
-- [x] `walkthrough.md` の作成と報告 <!-- id: 4 -->
+- [x] 長尺動画向けの時間帯指定（`--time`, `--start`, `--end`）およびセクション・トピック指定（`--focus`）機能の実装 <!-- id: 5 -->
+- [x] 検証とドキュメント更新 <!-- id: 6 -->
