@@ -860,27 +860,69 @@ def find_relevant_past_posts(
 
     scored_posts = []
     current_tag_set = {str(t).lower() for t in current_tags}
-    current_keywords = set(re.findall(r"[\w]+", (current_title + " " + current_text[:1000]).lower()))
+
+    # 論文ID（例: 2609.19075 / 2609-19075）の抽出
+    arxiv_id_match = re.search(r"(\d{4}[\.-]\d{4,5})", current_title + " " + (current_slug or ""))
+    current_arxiv_core = arxiv_id_match.group(1).replace(".", "-") if arxiv_id_match else None
+
+    # ストップワードの拡充（一般的な助詞、英語冠詞、年号・日付・汎用単語など）
+    stopwords = {
+        "the", "and", "for", "with", "this", "that", "from", "into", "over", "under", "about",
+        "解説", "入門", "理論", "物理学", "記事", "概要", "まとめ", "徹底", "考察",
+        "2024", "2025", "2026", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12",
+        "part", "vol", "chapter", "第1章", "第2章", "前編", "後編"
+    }
+
+    current_keywords = {
+        w for w in re.findall(r"[\w]+", (current_title + " " + current_text[:1000]).lower())
+        if len(w) >= 2 and w not in stopwords
+    }
 
     for post in posts_index:
         if current_slug and post["slug"] == current_slug:
             continue
 
         score = 0
+        post_slug = post.get("slug", "")
+        post_title = post.get("title", "")
+        post_summary = post.get("summary", "")
         post_tags = {str(t).lower() for t in post.get("tags", [])}
-        common_tags = current_tag_set & post_tags
-        score += len(common_tags) * 3
 
-        post_keywords = set(re.findall(r"[\w]+", (post["title"] + " " + post.get("summary", "")).lower()))
+        # 1. 同一論文（リメイク版や学部生向け版など）は最高優先度
+        if current_arxiv_core and current_arxiv_core in post_slug.replace(".", "-"):
+            score += 50
+
+        # 2. タグの一致（強いシグナル）
+        common_tags = current_tag_set & post_tags
+        score += len(common_tags) * 10
+
+        # 3. 共通キーワード
+        post_keywords = {
+            w for w in re.findall(r"[\w]+", (post_title + " " + post_summary).lower())
+            if len(w) >= 2 and w not in stopwords
+        }
         common_words = current_keywords & post_keywords
-        common_words = {w for w in common_words if len(w) >= 2 and w not in {"the", "and", "for", "with", "this", "that", "解説", "入門", "理論", "物理学"}}
-        score += len(common_words)
+        score += len(common_words) * 2
+
+        # 4. タグが全く一致せず、キーワード一致も少ない無関係な記事は除外
+        if len(common_tags) == 0 and len(common_words) < 3:
+            continue
+
+        # 5. ジャンル乖離の防止: 物理・数理記事にビジネス書評やクラウドインフラが混入するのを防ぐ
+        physics_tags = {"物理学", "場の量子論", "素粒子論", "超弦理論", "数理物理", "数理物理学", "有効場の理論", "双対性", "入門解説", "トポロジカル場論", "量子情報"}
+        business_cloud_tags = {"週4時間だけ働く", "ライフスタイル設計", "キャリア", "働き方", "書評", "aws", "インフラ", "セキュリティ", "cloudfront"}
+
+        is_current_physics = bool(current_tag_set & {t.lower() for t in physics_tags})
+        is_post_business_cloud = bool(post_tags & {t.lower() for t in business_cloud_tags})
+        if is_current_physics and is_post_business_cloud:
+            continue
 
         if score > 0:
             scored_posts.append((score, post))
 
     scored_posts.sort(key=lambda x: x[0], reverse=True)
     return [p[1] for p in scored_posts[:max_matches]]
+
 
 
 # ==============================================================================
