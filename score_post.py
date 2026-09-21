@@ -282,32 +282,42 @@ def print_report(file_label: str, result: Dict[str, Any]):
     print("=" * 64 + "\n")
 
 
-def resolve_file_path(target: str) -> Optional[str]:
-    """与えられた文字列から実在するファイルを柔軟に探索・解決"""
+def resolve_file_paths(target: str) -> List[str]:
+    """与えられた文字列から実在するファイルを柔軟に探索し、マッチする全ファイルのリストを返す"""
+    matched: List[str] = []
+
     # 1. そのままのパスで存在するか
     if os.path.isfile(target):
-        return os.path.abspath(target)
+        matched.append(os.path.abspath(target))
 
     # 2. playground-Jev 相対または yagibrary 相対
     candidates = [
-        target,
         os.path.join(os.path.dirname(__file__), target),
         os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts", target),
         os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts", f"{target}.md"),
     ]
     for c in candidates:
-        if os.path.isfile(c):
-            return os.path.abspath(c)
+        if os.path.isfile(c) and os.path.abspath(c) not in matched:
+            matched.append(os.path.abspath(c))
 
-    # 3. yagibrary の posts 内で部分一致検索
+    # 3. yagibrary の posts 内で部分一致・ワイルドカード検索
     posts_dir = os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts")
     if os.path.isdir(posts_dir):
-        matches = glob.glob(os.path.join(posts_dir, f"*{target}*"))
-        files = [m for m in matches if os.path.isfile(m)]
-        if files:
-            return os.path.abspath(files[0])
+        query = target if ("*" in target or "?" in target) else f"*{target}*"
+        if not query.endswith(".md"):
+            query_patterns = [query, f"{query}.md"]
+        else:
+            query_patterns = [query]
 
-    return None
+        for qp in query_patterns:
+            matches = glob.glob(os.path.join(posts_dir, qp))
+            for m in matches:
+                abs_m = os.path.abspath(m)
+                if os.path.isfile(abs_m) and abs_m not in matched:
+                    matched.append(abs_m)
+
+    matched.sort()
+    return matched
 
 
 def get_latest_post_path() -> Optional[str]:
@@ -369,14 +379,17 @@ def main():
         targets.append(latest)
     elif args.files:
         for f_arg in args.files:
-            resolved = resolve_file_path(f_arg)
-            if not resolved:
+            resolved_list = resolve_file_paths(f_arg)
+            if not resolved_list:
                 print(f"❌ エラー: ファイルが見つかりません: {f_arg}", file=sys.stderr)
                 sys.exit(1)
-            targets.append(resolved)
+            for r in resolved_list:
+                if r not in targets:
+                    targets.append(r)
     else:
         parser.print_help()
         sys.exit(0)
+
 
     results = []
     for file_path in targets:
