@@ -460,6 +460,14 @@ def format_and_save_post(
     # 数式ブロック $$...$$ の改行正規化
     body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
 
+    # 本文（body）内に Gemini が重複生成した「あわせて読みたい/関連記事」セクションがあれば除去
+    body = re.sub(
+        r"(?:---\s*)?###?\s*(?:🔗\s*)?(?:あわせて読みたい|関連記事).*?(?=(?:\n---|\Z))",
+        "",
+        body,
+        flags=re.DOTALL
+    ).strip()
+
     # 関連記事リンクセクション
     related_section = ""
     if relevant_posts:
