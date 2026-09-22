@@ -21,6 +21,8 @@ import argparse
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
+import base64
+
 import yaml
 from dotenv import load_dotenv
 
@@ -33,6 +35,11 @@ try:
 except ImportError:
     Image = None
     ImageGrab = None
+
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 try:
     from pypdf import PdfReader, PdfWriter
@@ -183,6 +190,79 @@ def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> T
     return buf.getvalue(), label
 
 
+def extract_pdf_figures(pdf_path: str, pages_str: Optional[str] = None) -> List[Dict[str, Any]]:
+    """PDFの指定ページから図（画像オブジェクト）を抽出し、Base64データURLとメタデータを生成"""
+    if fitz is None:
+        print("  ⚠️ PyMuPDF (fitz) が利用できないため、PDF図抽出をスキップします。")
+        return []
+
+    doc = fitz.open(pdf_path)
+    total_pages = len(doc)
+    selected_indices = []
+
+    if pages_str and pages_str.strip():
+        parts = pages_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                s_str, e_str = part.split("-", 1)
+                start = max(1, int(s_str.strip())) - 1
+                end = min(total_pages, int(e_str.strip())) - 1
+                for idx in range(start, end + 1):
+                    selected_indices.append(idx)
+            else:
+                idx = int(part) - 1
+                if 0 <= idx < total_pages:
+                    selected_indices.append(idx)
+    else:
+        # デフォルトは先頭最大10ページ
+        selected_indices = list(range(min(10, total_pages)))
+
+    figures = []
+    seen_xrefs = set()
+    fig_idx = 1
+
+    for pno in selected_indices:
+        page = doc[pno]
+        img_list = page.get_images()
+        for img in img_list:
+            xref = img[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+
+            base_img = doc.extract_image(xref)
+            img_bytes = base_img["image"]
+            ext = base_img["ext"]
+            w = base_img["width"]
+            h = base_img["height"]
+
+            # 極小アイコンや細線装飾（幅100px未満または高さ50px未満）はスキップ
+            if w < 100 or h < 50:
+                continue
+
+            b64_str = base64.b64encode(img_bytes).decode("utf-8")
+            mime_type = "image/png" if ext == "png" else f"image/{ext}"
+            data_url = f"data:{mime_type};base64,{b64_str}"
+            placeholder = f"{{{{PDF_FIGURE_{fig_idx}}}}}"
+
+            figures.append({
+                "placeholder": placeholder,
+                "data_url": data_url,
+                "bytes": img_bytes,
+                "mime_type": mime_type,
+                "ext": ext,
+                "width": w,
+                "height": h,
+                "page": pno + 1,
+            })
+            fig_idx += 1
+
+    return figures
+
+
 def get_clipboard_image_bytes() -> Optional[bytes]:
     """クリップボードから画像を取得して PNG バイト列として返す（Windows Snipping Toolのファイルリスト形式にも完全対応）"""
     if ImageGrab is None:
@@ -296,6 +376,7 @@ def generate_physics_gap_post(
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
     preferred_title: Optional[str] = None,
     source_post: Optional[Dict[str, Any]] = None,
+    figures: Optional[List[Dict[str, Any]]] = None,
     model_name: str = "gemini-3.8-flash",
 ) -> str:
     """Gemini を用いて大学院レベルの厳密な物理行間埋めブログ記事を生成"""
@@ -319,6 +400,30 @@ def generate_physics_gap_post(
 のように自然に元記事を明示的に引用・リンクし、前回の議論のどこを深掘り・補完するのかを読者に明示してください。
 """
 
+    figures_instruction = ""
+    fig_parts = []
+    if figures:
+        from google.genai import types
+        fig_lines = []
+        for f in figures:
+            fig_lines.append(
+                f"- `{f['placeholder']}`: (PDF p.{f['page']} より抽出、サイズ {f['width']}x{f['height']}) "
+                f"-> 本文の該当する概念や式変形の直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
+            )
+            # Gemini に図の内容そのものを見せるために Part を作成
+            fig_parts.append(
+                types.Part.from_bytes(data=f["bytes"], mime_type=f["mime_type"])
+            )
+
+        figures_instruction = f"""
+【★最重要指令：教科書PDFから抽出された図（Figure）の自動埋め込み】
+添付のPDFから以下の {len(figures)} 点の図（画像）が抽出され、マルチモーダル入力として提示されています。
+あなたが執筆する解説文の最もふさわしい位置（ファイバー束の局所自明化、切断の可換図式、座標変換などを説明する箇所）に、
+必ず以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
+{chr(10).join(fig_lines)}
+※プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）は書き換えずにそのまま出力してください（記事保存時に自動的に高解像度 Base64 画像へと置換されます）。
+"""
+
     title_instruction = (
         f'title: "{preferred_title}"'
         if preferred_title
@@ -328,6 +433,7 @@ def generate_physics_gap_post(
     system_prompt = f"""あなたは場の量子論、数理物理学、超弦理論、理論物理学全般の最前線を探究する一流の理論物理学者兼サイエンスブロガーです。
 あなたの読者は物理学の修士課程修了レベル以上の知識を持つ者（または意欲的な研究者・院生）です。
 {source_post_instruction}
+{figures_instruction}
 【最重要指針：物理・数学のギャップを徹底的に埋め、難解な解説を解きほぐす】
 教科書や論文では、数式の飛躍（「式(A)より直ちに式(B)を得る」）だけでなく、**著者の文章・解説が極めて抽象的でわかりづらい**ことが多々あります。
 以下の2つの側面から、徹底的にかみ砕いて解き明かしてください：
@@ -384,7 +490,7 @@ tags:
 {question_hint if question_hint else "添付の資料（画像・PDF・メモ）から、非自明な式変形や難解な解説・行間を特定し、厳密かつ直観的にわかりやすく解説してください。"}
 """
 
-    prompt_contents = contents + [system_prompt]
+    prompt_contents = contents + fig_parts + [system_prompt]
 
     print(f"\n🧠 [Gemini] 物理行間埋め記事を執筆中 (モデル: {model_name})...")
     candidate_models = [
@@ -422,6 +528,7 @@ def format_and_save_post(
     slug_hint: Optional[str] = None,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
     source_label: Optional[str] = None,
+    figures: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Astro 向けに最終フォーマットを整えてファイルに保存"""
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -469,6 +576,23 @@ def format_and_save_post(
         body,
         flags=re.DOTALL
     ).strip()
+
+    # PDFから抽出された図のプレースホルダー（{{PDF_FIGURE_X}}）を Base64 データURLに置換
+    if figures:
+        for f in figures:
+            p_holder = f["placeholder"]
+            data_url = f["data_url"]
+            if p_holder in body:
+                body = body.replace(p_holder, data_url)
+                print(f"  🖼️ 図の埋め込み成功: {p_holder} (p.{f['page']}, {f['width']}x{f['height']})")
+            else:
+                # Gemini が挿入し忘れた場合のフォールバック: 記事末尾のまとめ直前に挿入
+                fallback_img = f"\n\n![教科書 p.{f['page']} より抽出された図]({data_url})\n\n"
+                if "## まとめ" in body:
+                    body = body.replace("## まとめ", f"{fallback_img}## まとめ", 1)
+                else:
+                    body += fallback_img
+                print(f"  🖼️ 図の自動配置（フォールバック挿入）: p.{f['page']} ({f['width']}x{f['height']})")
 
     # 関連記事リンクセクション
     related_section = ""
@@ -574,6 +698,7 @@ def main():
 
     gemini_contents = []
     source_label = ""
+    pdf_figures = []
 
     # 1. 画像の処理
     image_bytes = None
@@ -605,6 +730,14 @@ def main():
         print(f"\n📑 PDF 読込: {resolved_pdf}")
         pdf_bytes, page_label = extract_pdf_pages_bytes(resolved_pdf, args.pages)
         print(f"  ✓ 抽出範囲: {page_label} ({len(pdf_bytes):,} bytes)")
+
+        # PDFから図（Figure/画像）を自動抽出
+        pdf_figures = extract_pdf_figures(resolved_pdf, args.pages)
+        if pdf_figures:
+            print(f"  🖼️ PDFから {len(pdf_figures)} 点の図（画像）を自動抽出:")
+            for pf in pdf_figures:
+                print(f"     - {pf['placeholder']}: p.{pf['page']} ({pf['width']}x{pf['height']}, {len(pf['bytes']):,} bytes)")
+
         from google.genai import types
         gemini_contents.append(
             types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
@@ -684,6 +817,7 @@ def main():
         relevant_posts=relevant_posts,
         preferred_title=args.title,
         source_post=source_post_info,
+        figures=pdf_figures,
         model_name=args.model,
     )
 
@@ -699,6 +833,7 @@ def main():
             slug_hint=args.slug,
             relevant_posts=relevant_posts,
             source_label=source_label,
+            figures=pdf_figures,
         )
         print("\n" + "=" * 65)
         print(f" 🎉 ブログ記事の保存が完了しました！")
