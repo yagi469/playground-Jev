@@ -351,6 +351,7 @@ def generate_physics_gap_post(
 1. **フロントマター（YAML Frontmatter）を記事先頭に出力してください**:
 ---
 {title_instruction}
+slug: "記事内容や解説する物理概念を的確に表す半角英数小文字・ハイフン区切りの英語スラッグ（3〜5単語。例: nakahara-tangent-bundle-structure-group, klein-gordon-hamiltonian-diagonalization, fibre-bundle-sections-gauge-field）"
 summary: "120〜180文字程度の魅力的な記事要約（どの式変形や難解な解説をどう解きほぐしたかを明確に）"
 tags:
   - 物理学
@@ -418,8 +419,9 @@ tags:
 def format_and_save_post(
     raw_markdown: str,
     output_dir: str,
-    slug_hint: str = "physics-gap",
+    slug_hint: Optional[str] = None,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    source_label: Optional[str] = None,
 ) -> str:
     """Astro 向けに最終フォーマットを整えてファイルに保存"""
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -507,11 +509,22 @@ def format_and_save_post(
 
     final_content = f"---\n{frontmatter_yaml}\n---\n\n{body}{related_section}{meta_footer}\n"
 
-    # ファイル名決定
-    # スラッグのサニタイズ
-    slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", slug_hint.lower()).strip("-")
-    if not slug:
+    # ファイル名用スラッグの決定
+    # 優先度: 1. 明示的な --slug 指定 -> 2. Gemini が生成した Frontmatter の slug -> 3. 入力ソース名 -> 4. フォールバック
+    chosen_slug = ""
+    if slug_hint and slug_hint.strip() and slug_hint != "physics-gap":
+        chosen_slug = slug_hint.strip()
+    elif parsed_meta.get("slug"):
+        chosen_slug = str(parsed_meta.get("slug")).strip()
+    elif source_label:
+        chosen_slug = source_label.strip()
+
+    # サニタイズ
+    slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chosen_slug.lower()).strip("-")
+    slug = re.sub(r"-+", "-", slug)  # 連続ハイフンを単一化
+    if not slug or len(slug) < 3:
         slug = "physics-derivation"
+
     filename = f"{today_str}-{slug}.md"
     file_path = os.path.join(output_dir, filename)
 
@@ -548,7 +561,7 @@ def main():
     )
     parser.add_argument("--question", "-q", type=str, help="疑問点や導出したい式の指定（テキスト）")
     parser.add_argument("--title", type=str, help="記事タイトルの希望（未指定時は自動生成）")
-    parser.add_argument("--slug", type=str, default="physics-gap", help="ファイル名のスラッグ")
+    parser.add_argument("--slug", type=str, default=None, help="ファイル名のスラッグ（未指定時は記事内容から自動生成）")
     parser.add_argument("--model", type=str, default="gemini-3.8-flash", help="使用する Gemini モデル")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_YAGIBRARY_POSTS_DIR, help="保存先ディレクトリ")
     parser.add_argument("--dry-run", action="store_true", help="ファイル保存せずコンソールに出力")
@@ -560,6 +573,7 @@ def main():
     print("=" * 65)
 
     gemini_contents = []
+    source_label = ""
 
     # 1. 画像の処理
     image_bytes = None
@@ -595,6 +609,13 @@ def main():
         gemini_contents.append(
             types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
         )
+        pdf_base = os.path.splitext(os.path.basename(resolved_pdf))[0]
+        pdf_first_word = re.sub(r"[^a-zA-Z0-9]+", "", pdf_base.split()[0]).lower()
+        if args.pages:
+            clean_pages = re.sub(r"[^a-zA-Z0-9]+", "-", args.pages)
+            source_label = f"{pdf_first_word}-p{clean_pages}"
+        else:
+            source_label = pdf_first_word
 
     # 3. Context (Markdown / Text) の処理
     context_text = ""
@@ -621,6 +642,9 @@ def main():
                         "url": f"/posts/{base_name}",
                     }
                     print(f"  🔗 指定された元記事を認識: [{post_title}]({source_post_info['url']})")
+                    if not source_label:
+                        clean_ctx = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", base_name)
+                        source_label = f"{clean_ctx}-followup"
             except Exception:
                 pass
 
@@ -674,6 +698,7 @@ def main():
             output_dir=args.output_dir,
             slug_hint=args.slug,
             relevant_posts=relevant_posts,
+            source_label=source_label,
         )
         print("\n" + "=" * 65)
         print(f" 🎉 ブログ記事の保存が完了しました！")
