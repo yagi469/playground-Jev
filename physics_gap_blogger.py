@@ -295,6 +295,7 @@ def generate_physics_gap_post(
     question_hint: str = "",
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
     preferred_title: Optional[str] = None,
+    source_post: Optional[Dict[str, Any]] = None,
     model_name: str = "gemini-3.8-flash",
 ) -> str:
     """Gemini を用いて大学院レベルの厳密な物理行間埋めブログ記事を生成"""
@@ -308,6 +309,16 @@ def generate_physics_gap_post(
             + "\n".join(lines) + "\n"
         )
 
+    source_post_instruction = ""
+    if source_post:
+        source_post_instruction = f"""
+【★最重要指令：元記事への明確な言及とリンク】
+今回の執筆は、当ブログの既存記事「[{source_post['title']}]({source_post['url']})」の続編・補完・発展です。
+必ず記事の冒頭（## 導入と問題の所在）および本文中で、
+「前回の記事 [{source_post['title']}]({source_post['url']}) では……」
+のように自然に元記事を明示的に引用・リンクし、前回の議論のどこを深掘り・補完するのかを読者に明示してください。
+"""
+
     title_instruction = (
         f'title: "{preferred_title}"'
         if preferred_title
@@ -316,7 +327,7 @@ def generate_physics_gap_post(
 
     system_prompt = f"""あなたは場の量子論、数理物理学、超弦理論、理論物理学全般の最前線を探究する一流の理論物理学者兼サイエンスブロガーです。
 あなたの読者は物理学の修士課程修了レベル以上の知識を持つ者（または意欲的な研究者・院生）です。
-
+{source_post_instruction}
 【最重要指針：物理・数学のギャップを徹底的に埋め、難解な解説を解きほぐす】
 教科書や論文では、数式の飛躍（「式(A)より直ちに式(B)を得る」）だけでなく、**著者の文章・解説が極めて抽象的でわかりづらい**ことが多々あります。
 以下の2つの側面から、徹底的にかみ砕いて解き明かしてください：
@@ -579,11 +590,32 @@ def main():
 
     # 3. Context (Markdown / Text) の処理
     context_text = ""
+    source_post_info = None
     if args.context:
         resolved_ctx = resolve_file_path(args.context)
         print(f"\n📝 コンテキストノート読込: {resolved_ctx}")
         with open(resolved_ctx, "r", encoding="utf-8") as f:
             context_text = f.read()
+
+        # Frontmatter から元記事メタデータを取得できるかチェック
+        m = re.match(r"^---\s*\n(.*?)\n---", context_text, re.DOTALL)
+        if m:
+            try:
+                meta = yaml.safe_load(m.group(1)) or {}
+                post_title = meta.get("title")
+                base_name = os.path.splitext(os.path.basename(resolved_ctx))[0]
+                if post_title:
+                    source_post_info = {
+                        "slug": base_name,
+                        "title": post_title,
+                        "summary": meta.get("summary", ""),
+                        "tags": meta.get("tags", []),
+                        "url": f"/posts/{base_name}",
+                    }
+                    print(f"  🔗 指定された元記事を認識: [{post_title}]({source_post_info['url']})")
+            except Exception:
+                pass
+
         gemini_contents.append(
             f"【ユーザーの手元ノート・前後の文脈】\n{context_text}"
         )
@@ -604,6 +636,12 @@ def main():
     posts_index = load_existing_posts_index(args.output_dir)
     query_hint = (args.question or "") + " " + context_text[:500]
     relevant_posts = find_relevant_past_posts(query_hint, posts_index, max_matches=3)
+
+    # 元記事が指定されている場合は関連記事リストの最優先（先頭）に配置
+    if source_post_info:
+        relevant_posts = [p for p in relevant_posts if p.get("slug") != source_post_info["slug"]]
+        relevant_posts.insert(0, source_post_info)
+
     if relevant_posts:
         print(f"\n🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:25] for p in relevant_posts]}")
 
@@ -613,6 +651,7 @@ def main():
         question_hint=args.question or "",
         relevant_posts=relevant_posts,
         preferred_title=args.title,
+        source_post=source_post_info,
         model_name=args.model,
     )
 
