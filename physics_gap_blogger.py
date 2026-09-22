@@ -525,7 +525,7 @@ def format_and_save_post(
     if not slug or len(slug) < 3:
         slug = "physics-derivation"
 
-    filename = f"{today_str}-{slug}.md"
+    filename = f"{slug}.md"
     file_path = os.path.join(output_dir, filename)
 
     # 同名ファイルが存在する場合は連番付与
