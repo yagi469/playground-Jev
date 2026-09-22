@@ -65,35 +65,59 @@ def init_gemini_client():
 # 1. パス解決 & PDF / 画像 / テキスト入力処理
 # ==============================================================================
 def resolve_file_path(file_path: str) -> str:
-    """ローカルファイルパスを柔軟に解決（yagibrary/docs/... や docs/... の指定にも対応）"""
+    """ローカルファイルパスを柔軟に解決（yagibrary/docs/... や yagibrary/src/content/posts/... などの指定に対応）"""
     normalized = file_path.replace("\\", "/").strip()
-    clean_rel = re.sub(r"^(?:yagibrary/docs/|yagibrary/|docs/)", "", normalized)
+    clean_rel = re.sub(
+        r"^(?:yagibrary/src/content/posts/|yagibrary/posts/|src/content/posts/|posts/|yagibrary/docs/|yagibrary/|docs/)",
+        "",
+        normalized
+    )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    yagibrary_dir = os.path.abspath(os.path.join(script_dir, "../yagibrary"))
+    posts_dir = os.path.join(yagibrary_dir, "src/content/posts")
+    docs_dir = os.path.join(yagibrary_dir, "docs")
+
     candidates = [
         # 1. そのままのパス（絶対パスまたはカレント基準）
         os.path.abspath(normalized),
         os.path.join(script_dir, normalized),
-        # 2. yagibrary 基準
-        os.path.abspath(os.path.join(script_dir, "../yagibrary", normalized)),
-        os.path.abspath(os.path.join(script_dir, "../yagibrary/docs", normalized)),
-        os.path.abspath(os.path.join(script_dir, "../yagibrary/docs", clean_rel)),
-        os.path.abspath(os.path.join(script_dir, "../yagibrary", clean_rel)),
-        # 3. playground-Jev 配下の docs / yagibrary
+        # 2. yagibrary の posts 基準
+        os.path.join(posts_dir, normalized),
+        os.path.join(posts_dir, clean_rel),
+        # 3. yagibrary の docs 基準
+        os.path.join(docs_dir, normalized),
+        os.path.join(docs_dir, clean_rel),
+        # 4. yagibrary ルート基準
+        os.path.join(yagibrary_dir, normalized),
+        os.path.join(yagibrary_dir, clean_rel),
+        # 5. playground-Jev 配下の docs / yagibrary
         os.path.abspath(os.path.join(script_dir, "docs", clean_rel)),
-        os.path.abspath(os.path.join(script_dir, "yagibrary/docs", clean_rel)),
     ]
 
+    # 拡張子がない場合は .md, .pdf も候補に追加
+    extended_candidates = []
     for c in candidates:
+        extended_candidates.append(c)
+        if not os.path.splitext(c)[1]:
+            extended_candidates.append(c + ".md")
+            extended_candidates.append(c + ".pdf")
+
+    for c in extended_candidates:
         norm_c = os.path.normpath(c)
         if os.path.exists(norm_c) and os.path.isfile(norm_c):
             return norm_c
 
-    # 4. docs フォルダ配下のサブディレクトリを再帰探索
+    # 6. 再帰探索（posts, docs, yagibrary全体）
     target_basename = os.path.basename(normalized)
+    possible_names = [target_basename]
+    if not os.path.splitext(target_basename)[1]:
+        possible_names.extend([f"{target_basename}.md", f"{target_basename}.pdf"])
+
     search_roots = [
-        os.path.abspath(os.path.join(script_dir, "../yagibrary/docs")),
-        os.path.abspath(os.path.join(script_dir, "../yagibrary")),
+        posts_dir,
+        docs_dir,
+        yagibrary_dir,
         os.path.join(script_dir, "docs"),
         script_dir,
     ]
@@ -101,10 +125,11 @@ def resolve_file_path(file_path: str) -> str:
         if os.path.exists(root_dir) and os.path.isdir(root_dir):
             for root, _, files in os.walk(root_dir):
                 for f in files:
-                    if f.lower() == target_basename.lower():
-                        return os.path.normpath(os.path.join(root, f))
+                    for p_name in possible_names:
+                        if f.lower() == p_name.lower():
+                            return os.path.normpath(os.path.join(root, f))
 
-    raise FileNotFoundError(f"指定されたファイルが見つかりません: '{file_path}' (探索候補: {candidates})")
+    raise FileNotFoundError(f"指定されたファイルが見つかりません: '{file_path}' (探索候補: {candidates[:5]}...)")
 
 
 def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> Tuple[bytes, str]:
@@ -476,10 +501,10 @@ def main():
     parser.add_argument("--pdf", type=str, help="教科書または論文の PDF ファイルパス")
     parser.add_argument("--pages", type=str, help="PDF の対象ページ範囲 (例: '120', '120-123')")
     parser.add_argument(
-        "--context", "--md", "--note",
+        "--context", "--md", "--note", "--post",
         type=str,
         dest="context",
-        help="前後の文脈や手元のメモ (Markdown/Textファイルパス)。--md や --note でも指定可能"
+        help="前後の文脈や手元のメモ、過去のブログ記事 (Markdown/Textファイルパス)。--md, --note, --post でも指定可能"
     )
     parser.add_argument("--question", "-q", type=str, help="疑問点や導出したい式の指定（テキスト）")
     parser.add_argument("--title", type=str, help="記事タイトルの希望（未指定時は自動生成）")
