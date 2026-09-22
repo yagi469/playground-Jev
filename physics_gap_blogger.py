@@ -184,15 +184,36 @@ def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> T
 
 
 def get_clipboard_image_bytes() -> Optional[bytes]:
-    """クリップボードから画像を取得して PNG バイト列として返す"""
+    """クリップボードから画像を取得して PNG バイト列として返す（Windows Snipping Toolのファイルリスト形式にも完全対応）"""
     if ImageGrab is None:
         raise ImportError("Pillow (PIL) が必要です。'pip install Pillow' を実行してください。")
 
     img = ImageGrab.grabclipboard()
+    if img is None:
+        return None
+
+    # パターン1: Image.Image オブジェクトとして取得できた場合
     if isinstance(img, Image.Image):
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+
+    # パターン2: Windows Snipping Tool (Win+Shift+S) 等により一時ファイルパスのリストが返された場合
+    if isinstance(img, list) and len(img) > 0:
+        for file_path in img:
+            if isinstance(file_path, str) and os.path.exists(file_path):
+                # 画像ファイルか判定してバイナリ読込
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in [".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"]:
+                    try:
+                        with Image.open(file_path) as opened_img:
+                            buf = io.BytesIO()
+                            opened_img.save(buf, format="PNG")
+                            return buf.getvalue()
+                    except Exception:
+                        with open(file_path, "rb") as f:
+                            return f.read()
+
     return None
 
 
