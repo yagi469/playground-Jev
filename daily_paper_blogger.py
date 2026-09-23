@@ -2529,6 +2529,7 @@ def format_doc_post_for_yagibrary(
     history: Optional[List[Dict[str, Any]]] = None,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
     figures: Optional[List[Dict[str, Any]]] = None,
+    extra_tags: Optional[List[str]] = None,
 ) -> str:
     """yagibrary (Astro) の形式に合わせて整形し、Frontmatter と Jev 診断レポートを付加"""
     clean_md = raw_markdown.strip()
@@ -2583,6 +2584,12 @@ def format_doc_post_for_yagibrary(
             tags = ["読書論考", "文献解説", "教養"]
 
     cleaned_tags = []
+    if extra_tags and isinstance(extra_tags, list):
+        for et in extra_tags:
+            et_clean = str(et).strip().replace('/', '-').replace('\\', '-').replace(':', '-')
+            if et_clean and et_clean not in cleaned_tags:
+                cleaned_tags.append(et_clean)
+
     for t in tags:
         t_clean = str(t).strip().replace('/', '-').replace('\\', '-').replace(':', '-')
         if t_clean and t_clean not in cleaned_tags:
@@ -2685,6 +2692,7 @@ def run_file_pipeline(
     offset: Optional[int] = None,
     output_dir: Optional[str] = None,
     custom_filename: Optional[str] = None,
+    extra_tags: Optional[List[str]] = None,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
     print("\n" + "=" * 65)
@@ -2700,6 +2708,8 @@ def run_file_pipeline(
         print(f" 📚 指定ジャンル: {genre}")
     if custom_filename:
         print(f" 🏷️ 指定保存ファイル名: {custom_filename}")
+    if extra_tags:
+        print(f" 🏷️ 固定付与タグ: {extra_tags}")
     print("=" * 65)
 
     if output_dir is None:
@@ -2749,6 +2759,7 @@ def run_file_pipeline(
         history=history,
         relevant_posts=relevant_posts,
         figures=doc_info.get("figures"),
+        extra_tags=extra_tags,
     )
 
 
@@ -2914,6 +2925,7 @@ def run_queue_pipeline(
         genre=genre,
         custom_filename=custom_filename,
         output_dir=output_dir,
+        extra_tags=book.get("tags"),
     )
 
     if out_files:
