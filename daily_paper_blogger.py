@@ -1693,6 +1693,109 @@ def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> T
     return pdf_bytes, label
 
 
+def resolve_chapter_pages_from_toc(
+    pdf_path: str,
+    chapter_hint: str,
+    total_pages: int,
+) -> Optional[str]:
+    """
+    大部数PDF（書籍・マニュアル等）において、目次（TOC）または目次スキャンページから、
+    指定された章・テーマのページ範囲（例: '366-378'）を自動特定する。
+    """
+    if not chapter_hint or total_pages <= 40:
+        return None
+
+    # 1. まず PDF 内部の電子しおり（TOC）を走査
+    if fitz is not None:
+        try:
+            doc = fitz.open(pdf_path)
+            toc = doc.get_toc()
+            if toc:
+                hint_lower = chapter_hint.lower().strip()
+                for idx, item in enumerate(toc):
+                    t = str(item[1]).lower()
+                    if hint_lower in t or t in hint_lower:
+                        start_p = int(item[2])
+                        end_p = start_p + 25
+                        if idx + 1 < len(toc):
+                            next_p = int(toc[idx + 1][2])
+                            if next_p > start_p:
+                                end_p = min(next_p + 2, total_pages)
+                        end_p = min(end_p, total_pages)
+                        doc.close()
+                        print(f"   🎯 [PDF目次解析] しおりからページ範囲を特定: p.{start_p}-{end_p} (見出し: {item[1]})")
+                        return f"{start_p}-{end_p}"
+            doc.close()
+        except Exception as e:
+            print(f"   ⚠️ PDFしおり走査エラー: {e}")
+
+    # 2. しおりが無い場合（KindleスクショやスキャンPDF）、先頭の目次ページ（p.4〜p.22）を Gemini に解析させてページ番号を特定
+    try:
+        from google.genai import types
+        reader = PdfReader(pdf_path)
+        toc_writer = PdfWriter()
+        # 目次が存在する可能性の高い範囲（4〜22ページ、または最大25ページ）
+        start_toc = min(3, total_pages - 1)
+        end_toc = min(22, total_pages)
+        for i in range(start_toc, end_toc):
+            toc_writer.add_page(reader.pages[i])
+
+        buf = io.BytesIO()
+        toc_writer.write(buf)
+        toc_bytes = buf.getvalue()
+
+        if len(toc_bytes) > 0:
+            toc_part = types.Part.from_bytes(data=toc_bytes, mime_type="application/pdf")
+            toc_prompt = f"""添付のPDFは書籍の目次（Table of Contents）抜粋です（全 {total_pages} ページ中の p.{start_toc + 1}-{end_toc}）。
+ユーザーが解説を希望しているテーマ/章: 『{chapter_hint}』
+
+目次を精査し、このテーマ/章が扱われている書籍内のページ番号（開始ページと終了ページ、またはその節の開始ページ）を特定してください。
+以下のJSON形式のみを出力してください。Markdownの```json ... ```で囲んでください。
+{{
+  "found": true,
+  "chapter_title": "目次に書かれている正確な見出し名",
+  "start_page": 366,
+  "end_page": 378,
+  "page_range_str": "366-378"
+}}
+※目次から該当する章・節・キーワードが見つからない場合は、{{"found": false}} と出力してください。
+"""
+            global gemini_client
+            if gemini_client is None:
+                init_gemini_client()
+
+            print(f"   🔍 [目次AIスキャン] 目次ページ (p.{start_toc + 1}-{end_toc}) を解析して 『{chapter_hint}』 の掲載ページを探索中...")
+            res = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=[toc_part, toc_prompt]
+            )
+            raw_text = res.text
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+            if json_match:
+                toc_data = json.loads(json_match.group(1))
+            else:
+                toc_data = json.loads(raw_text.strip())
+
+            if toc_data.get("found"):
+                start_p = int(toc_data.get("start_page", 1))
+                end_p = int(toc_data.get("end_page", start_p + 15))
+                # ページ番号のバリデーション
+                start_p = max(1, min(start_p, total_pages))
+                end_p = max(start_p, min(end_p, total_pages))
+                # あまりに長すぎる場合は最大35ページ程度に収める
+                if end_p - start_p > 35:
+                    end_p = start_p + 35
+                range_str = f"{start_p}-{end_p}"
+                print(f"   🎯 [目次AIスキャン成功] 『{chapter_hint}』の掲載ページを自動特定しました: p.{range_str} (見出し: {toc_data.get('chapter_title')})")
+                return range_str
+            else:
+                print(f"   ℹ️ 目次内に直接該当する見出しは見つかりませんでした（デフォルト走査を行います）。")
+    except Exception as e:
+        print(f"   ⚠️ 目次AIスキャン失敗: {e}")
+
+    return None
+
+
 def load_and_process_local_file(
     file_path: str,
     pages_str: Optional[str] = None,
@@ -1726,7 +1829,17 @@ def load_and_process_local_file(
 
     if ext == ".pdf":
         from google.genai import types
-        pdf_bytes, page_label = extract_pdf_pages_bytes(resolved_path, pages_str)
+        from pypdf import PdfReader
+        total_pages = len(PdfReader(resolved_path).pages)
+
+        # ページ指定がなく章・テーマが指定されている場合、目次から自動特定を試みる
+        effective_pages_str = pages_str
+        if not effective_pages_str and chapter_hint and total_pages > 40:
+            auto_pages = resolve_chapter_pages_from_toc(resolved_path, chapter_hint, total_pages)
+            if auto_pages:
+                effective_pages_str = auto_pages
+
+        pdf_bytes, page_label = extract_pdf_pages_bytes(resolved_path, effective_pages_str)
         doc_info["page_label"] = page_label
         doc_info["pdf_part"] = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
         doc_info["doc_type"] = "pdf"
