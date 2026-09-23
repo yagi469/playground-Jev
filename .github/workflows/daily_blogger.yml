@@ -1,9 +1,9 @@
 name: Daily arXiv Paper Blogger
 
 on:
-  schedule:
-    # 毎日 日本時間 08:12 (UTC 23:12) に自動実行（毎正時のキュー集中・遅延を回避）
-    - cron: '12 23 * * *'
+  # schedule:
+  #   # 毎日 日本時間 08:12 (UTC 23:12) に自動実行（毎正時のキュー集中・遅延を回避）
+  #   - cron: '12 23 * * *'
   workflow_dispatch:
     inputs:
       file_path:
