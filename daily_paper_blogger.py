@@ -174,6 +174,12 @@ if __name__ == "__main__":
         help="記事保存先ディレクトリ"
     )
     parser.add_argument(
+        "--filename", "--custom-filename",
+        type=str,
+        default=None,
+        help="保存する記事ファイル名を明示的に指定（例: my-custom-article.md）"
+    )
+    parser.add_argument(
         "positional_args",
         nargs="*",
         help="後方互換用: [max_papers] [top_n]"
@@ -199,6 +205,7 @@ if __name__ == "__main__":
             genre=args.genre,
             offset=args.offset,
             output_dir=args.output_dir,
+            custom_filename=args.filename,
         )
     elif args.arxiv_id.strip():
         # 特定論文指定モード

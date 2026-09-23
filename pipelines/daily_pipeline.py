@@ -129,7 +129,7 @@ def run_daily_pipeline(
         )
 
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
-        filename = f"{today_str}-arxiv-{clean_id}.md"
+        filename = f"arxiv-{clean_id}.md"
         file_path = os.path.join(target_dir, filename)
 
         with open(file_path, "w", encoding="utf-8") as f:
