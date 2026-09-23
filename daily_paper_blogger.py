@@ -21,11 +21,23 @@ import yaml
 from dotenv import load_dotenv
 from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
 
+import base64
+
 try:
     from pypdf import PdfReader, PdfWriter
 except ImportError:
     PdfReader = None
     PdfWriter = None
+
+try:
+    try:
+        import pymupdf as fitz  # type: ignore
+    except ImportError:
+        import fitz  # type: ignore
+except ImportError:
+    fitz = None
+
+
 
 # 環境変数の読み込み
 load_dotenv(".env.local")
@@ -277,6 +289,197 @@ def fetch_arxiv_paper_content(arxiv_id: str) -> Optional[Dict[str, Any]]:
 
 
 # ==============================================================================
+# 1.5. PDF / arXiv 図表（Figure）抽出 & 埋め込みユーティリティ
+# ==============================================================================
+def extract_pdf_figures(
+    pdf_path: str,
+    pages_str: Optional[str] = None,
+    max_figures: int = 8,
+    min_width: int = 120,
+    min_height: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    PDFの指定ページから図（画像オブジェクト・グラフ・回路図・ダイアグラム等）を抽出し、
+    Base64データURLとメタデータ（プレースホルダー、ページ番号、サイズ等）を生成して返す。
+    """
+    if fitz is None:
+        print("  ⚠️ PyMuPDF (fitz) が利用できないため、PDF図表抽出をスキップします。'pip install pymupdf' を推奨します。")
+        return []
+
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        print(f"  ⚠️ PDF図表抽出オープン失敗 ({pdf_path}): {e}")
+        return []
+
+    total_pages = len(doc)
+    selected_indices = []
+
+    if pages_str and pages_str.strip():
+        parts = pages_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                s_str, e_str = part.split("-", 1)
+                start = max(1, int(s_str.strip())) - 1
+                end = min(total_pages, int(e_str.strip())) - 1
+                for idx in range(start, end + 1):
+                    selected_indices.append(idx)
+            else:
+                idx = int(part) - 1
+                if 0 <= idx < total_pages:
+                    selected_indices.append(idx)
+    else:
+        # デフォルトは全ページ走査（上限30ページ）
+        selected_indices = list(range(min(30, total_pages)))
+
+    figures = []
+    seen_xrefs = set()
+    fig_idx = 1
+
+    for pno in selected_indices:
+        page = doc[pno]
+        img_list = page.get_images()
+        for img in img_list:
+            if len(figures) >= max_figures:
+                break
+            xref = img[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+
+            try:
+                base_img = doc.extract_image(xref)
+            except Exception:
+                continue
+
+            img_bytes = base_img["image"]
+            ext = base_img["ext"]
+            w = base_img["width"]
+            h = base_img["height"]
+
+            # 極小アイコンや細線・装飾（幅120px未満または高さ60px未満）はスキップ
+            if w < min_width or h < min_height:
+                continue
+
+            b64_str = base64.b64encode(img_bytes).decode("utf-8")
+            mime_type = "image/png" if ext == "png" else f"image/{ext}"
+            data_url = f"data:{mime_type};base64,{b64_str}"
+            placeholder = f"{{{{PDF_FIGURE_{fig_idx}}}}}"
+
+            figures.append({
+                "placeholder": placeholder,
+                "data_url": data_url,
+                "bytes": img_bytes,
+                "mime_type": mime_type,
+                "ext": ext,
+                "width": w,
+                "height": h,
+                "page": pno + 1,
+            })
+            fig_idx += 1
+
+        if len(figures) >= max_figures:
+            break
+
+    return figures
+
+
+def fetch_arxiv_paper_figures(paper: Dict[str, Any], max_figures: int = 6) -> List[Dict[str, Any]]:
+    """arXiv 論文の PDF を一時ダウンロードし、図表（Figure）を抽出する"""
+    pdf_url = paper.get("pdf_url")
+    if not pdf_url:
+        return []
+
+    print(f"  📥 [arXiv PDF] 論文PDFから図表を抽出中: {pdf_url}...")
+    temp_dir = os.path.join(os.path.dirname(__file__), "temp_arxiv_pdfs")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
+    temp_pdf_path = os.path.join(temp_dir, f"{clean_id}.pdf")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    try:
+        # すでにダウンロード済みでなければダウンロード
+        if not os.path.exists(temp_pdf_path) or os.path.getsize(temp_pdf_path) == 0:
+            resp = httpx.get(pdf_url, headers=headers, follow_redirects=True, timeout=30.0)
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                with open(temp_pdf_path, "wb") as f:
+                    f.write(resp.content)
+            else:
+                print(f"  ⚠️ arXiv PDF ダウンロード失敗 (ステータス: {resp.status_code})")
+                return []
+
+        figures = extract_pdf_figures(temp_pdf_path, max_figures=max_figures)
+        if figures:
+            print(f"  🖼️ [arXiv 図表抽出] {len(figures)} 点の図表を論文から抽出しました！")
+        return figures
+    except Exception as e:
+        print(f"  ⚠️ arXiv 図表抽出エラー: {e}")
+        return []
+
+
+def build_figures_prompt_components(figures: Optional[List[Dict[str, Any]]]) -> Tuple[str, List[Any]]:
+    """図表リストから Gemini 用のプロンプト指示テキストと Part オブジェクトのリストを生成"""
+    if not figures:
+        return "", []
+
+    from google.genai import types
+    fig_lines = []
+    fig_parts = []
+
+    for f in figures:
+        fig_lines.append(
+            f"- `{f['placeholder']}`: (p.{f['page']} より抽出、サイズ {f['width']}x{f['height']}) "
+            f"-> 本文の該当する概念・モデル・実験グラフ・可換図式を解説する直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
+        )
+        fig_parts.append(
+            types.Part.from_bytes(data=f["bytes"], mime_type=f["mime_type"])
+        )
+
+    figures_instruction = f"""
+【★最重要指令：文献PDFから抽出された図表（Figure）の自動埋め込み】
+添付のPDFから以下の {len(figures)} 点の図表（画像）が抽出され、マルチモーダル入力として提示されています。
+あなたが執筆する解説文の最もふさわしい位置（モデルの概念図、相図、数値計算グラフ、回路図、可換図式、アーキテクチャ図などを説明する箇所）に、
+必ず以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
+{chr(10).join(fig_lines)}
+※プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）は書き換えずにそのまま出力してください（記事保存時に自動的に高解像度画像へと置換されます）。
+"""
+    return figures_instruction, fig_parts
+
+
+def embed_figures_in_markdown(body: str, figures: Optional[List[Dict[str, Any]]]) -> str:
+    """プレースホルダー {{PDF_FIGURE_X}} を Base64 データURLに置換し、未配置の図はフォールバック挿入"""
+    if not figures:
+        return body
+
+    for f in figures:
+        p_holder = f["placeholder"]
+        data_url = f["data_url"]
+        if p_holder in body:
+            body = body.replace(p_holder, data_url)
+            print(f"  🖼️ 図の埋め込み成功: {p_holder} (p.{f['page']}, {f['width']}x{f['height']})")
+        else:
+            # Gemini が本文に配置し忘れた場合のフォールバック: まとめセクションの前または末尾に挿入
+            fallback_img = f"\n\n![文献 p.{f['page']} より抽出された図表]({data_url})\n\n"
+            if "## まとめ" in body:
+                body = body.replace("## まとめ", f"{fallback_img}## まとめ", 1)
+            elif "## で、私" in body:
+                body = body.replace("## で、私", f"{fallback_img}## で、私", 1)
+            else:
+                body += fallback_img
+            print(f"  🖼️ 図の自動配置（フォールバック挿入）: p.{f['page']} ({f['width']}x{f['height']})")
+
+    return body
+
+
+
+# ==============================================================================
 # 2. TypeSafe (Jev) による高速多面スクリーニング & ランキング
 # ==============================================================================
 def load_user_interests() -> Dict[str, Any]:
@@ -472,10 +675,13 @@ def write_blog_post_with_gemini(
 {fc.get('conclusion', '')[:1500]}
 """
 
+    # 図表（Figure）プロンプト部品の生成
+    figures_instruction, fig_parts = build_figures_prompt_components(paper.get("figures"))
+
     prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
-{user_perspective}{related_context}
+{user_perspective}{related_context}{figures_instruction}
 【取り上げる論文情報】
 - arXiv ID: {paper['arxiv_id']}
 - 論文タイトル: {paper['title']}
@@ -532,6 +738,8 @@ tags:
 Markdown形式で出力してください。
 """
 
+    prompt_contents = fig_parts + [prompt]
+
     candidate_models = [
         "gemini-3.8-flash",
         "gemini-3.6-flash",
@@ -543,7 +751,7 @@ Markdown形式で出力してください。
         try:
             response = gemini_client.models.generate_content(
                 model=model_name,
-                contents=prompt,
+                contents=prompt_contents,
             )
             post_text = response.text
             print(f"  ✓ Gemini 執筆完了 (モデル: {model_name})")
@@ -553,6 +761,7 @@ Markdown形式で出力してください。
 
     if not post_text:
         raise RuntimeError("Gemini による執筆に失敗しました。")
+
 
     return post_text
 
@@ -668,10 +877,14 @@ def rewrite_blog_post_with_gemini(
 1. 前回のドラフトの構成（フロントマター、## 導入、## 背景にある物理・数学の壁、## この論文の核心アイデアと数理的機構、## で、私（筆者）はどう考えるか？、## まとめ ＆ 論文リンク）を維持したまま、上記改善指令を完全に反映して全面的にブラッシュアップしてください。
 2. 太字強調は必ず HTML の <strong> タグ（例: <strong>太字</strong>）を使用し、Markdownの ** は一切使用しないでください。
 3. 本文先頭に「# タイトル」は置かず、フロントマターから始めてください。
-4. 数式ブロックは必ず独立した行（$$\\n数式\\n$$）で出力してください。
+4. 数式ブロックは必ず独立した行（$$\n数式\n$$）で出力してください。
+5. 前回のドラフトに含まれる図表プレースホルダー（{{PDF_FIGURE_X}}）や画像構文は削除せず、解説の文脈に合わせて維持または適切な位置に配置してください。
 
 知的好奇心と数理的深みに満ちた、決定版となる修正後Markdown記事を出力してください。
 """
+
+    _, fig_parts = build_figures_prompt_components(paper.get("figures"))
+    rewrite_contents = fig_parts + [rewrite_prompt]
 
     candidate_models = [
         "gemini-3.8-flash",
@@ -684,13 +897,14 @@ def rewrite_blog_post_with_gemini(
         try:
             response = gemini_client.models.generate_content(
                 model=model_name,
-                contents=rewrite_prompt,
+                contents=rewrite_contents,
             )
             rewritten_text = response.text
             print(f"  ✓ Gemini リライト完了 (Round {revision_round}, モデル: {model_name})")
             break
         except Exception as e:
             print(f"  ⚠️ {model_name} でのリライトエラー: {e}")
+
 
     if not rewritten_text:
         print("  ⚠️ リライト生成に失敗したため、前回のドラフトを維持します。")
@@ -936,14 +1150,16 @@ def format_post_for_yagibrary(
     time_offset_seconds: int = 0,
     history: Optional[List[Dict[str, Any]]] = None,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    figures: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     yagibrary (Astro content collections) のフォーマット仕様に合わせて整形：
     1. title, date, summary, tags の Frontmatter 生成・正規化
     2. 本文冒頭の不要な # 見出しの除去
     3. Markdownの **太字** を HTMLの <strong>太字</strong> に変換（AGENTS.mdルール遵守）
-    4. 関連記事リンクセクションを本文末尾に付加
-    5. 採点レポートを記事末尾に付加（Evaluator-Optimizer 推敲履歴を含む）
+    4. 論文PDFから抽出された図表（Figure）の自動埋め込み
+    5. 関連記事リンクセクションを本文末尾に付加
+    6. 採点レポートを記事末尾に付加（Evaluator-Optimizer 推敲履歴を含む）
     """
     # Frontmatter の抽出
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -1003,6 +1219,11 @@ def format_post_for_yagibrary(
     # 1行にまとまった $$式$$ を、remark-math / KaTeX が正しくブロック数式として認識し、
     # 横スクロール（スライド）可能にするため \n\n$$\n式\n$$\n\n に展開
     body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
+
+    # PDFから抽出された図表プレースホルダー（{{PDF_FIGURE_X}}）を Base64 データURLに置換
+    figs_to_embed = figures or paper.get("figures")
+    body = embed_figures_in_markdown(body, figs_to_embed)
+
 
     # 関連記事セクション（文脈の記憶・ネットワーク）
     related_section = ""
@@ -1165,8 +1386,9 @@ def run_daily_pipeline(
         if relevant_posts:
             print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
 
-        # 2.5. 論文本文（HTML/ar5iv）の重要セクション抽出
+        # 2.5. 論文本文（HTML/ar5iv）の重要セクション抽出 & PDF図表抽出
         paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+        paper["figures"] = fetch_arxiv_paper_figures(paper)
 
         # 3. Gemini × Jev 自律推敲・リライトループ（Evaluator-Optimizer パターン）
         raw_markdown, quality, history = generate_refined_blog_post(
@@ -1187,7 +1409,9 @@ def run_daily_pipeline(
             time_offset_seconds=time_offset,
             history=history,
             relevant_posts=relevant_posts,
+            figures=paper.get("figures"),
         )
+
 
         # 5. ファイル保存
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
@@ -1259,8 +1483,9 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
         if relevant_posts:
             print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
 
-        # 論文本文（HTML/ar5iv）の重要セクション抽出
+        # 論文本文（HTML/ar5iv）の重要セクション抽出 & PDF図表抽出
         paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+        paper["figures"] = fetch_arxiv_paper_figures(paper)
 
         # Gemini × Jev 自律推敲・リライトループ
         raw_markdown, quality, history = generate_refined_blog_post(
@@ -1279,7 +1504,9 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
             time_offset_seconds=time_offset,
             history=history,
             relevant_posts=relevant_posts,
+            figures=paper.get("figures"),
         )
+
 
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
         filename = f"{today_str}-arxiv-{clean_id}.md"
@@ -1457,7 +1684,14 @@ def load_and_process_local_file(
         doc_info["doc_type"] = "pdf"
         print(f"   📑 PDF 抽出完了: {page_label} ({len(pdf_bytes):,} bytes)")
 
+        # 図表（Figure）の抽出
+        pdf_figures = extract_pdf_figures(resolved_path, pages_str=pages_str, max_figures=8)
+        doc_info["figures"] = pdf_figures
+        if pdf_figures:
+            print(f"   🖼️ PDFから図表（Figure）を {len(pdf_figures)} 点抽出完了")
+
         # Gemini に基本メタデータの抽出を依頼
+
         meta_prompt = f"""添付のPDFドキュメント（抽出範囲: {page_label}、指定テーマ/章: {chapter_hint or '指定なし'}）の内容を読み取り、
 以下のJSON形式でメタデータを出力してください。Markdownの```json ... ```形式で囲んでください。
 {{
@@ -1700,10 +1934,13 @@ def write_blog_post_from_doc_with_gemini(
 
     tags_sample = "\n".join([f"  - {t}" for t in g_config["default_tags"]])
 
+    # 図表（Figure）プロンプト部品の生成
+    figures_instruction, fig_parts = build_figures_prompt_components(doc_info.get("figures"))
+
     prompt = f"""{g_config['persona']}
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
 著者の思考の核心と現実への影響・独自オピニオンを生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
-{related_context}
+{related_context}{figures_instruction}
 【取り上げるドキュメント情報】
 - 文書名: {doc_info['file_name']}
 - タイトル: {doc_info['title']}
@@ -1741,10 +1978,11 @@ Markdown形式で出力してください。
 """
 
     if doc_info["doc_type"] == "pdf":
-        contents = [doc_info["pdf_part"], prompt]
+        contents = [doc_info["pdf_part"]] + fig_parts + [prompt]
     else:
         text_body = doc_info.get("text_content", "")[:35000]
-        contents = [f"【ドキュメント本文】\n{text_body}\n\n", prompt]
+        contents = [f"【ドキュメント本文】\n{text_body}\n\n"] + fig_parts + [prompt]
+
 
     candidate_models = [
         "gemini-3.8-flash",
@@ -1899,15 +2137,19 @@ def rewrite_doc_blog_post_with_gemini(
 2. テキストの太字は必ず HTMLの <strong>太字</strong> タグを使用（Markdownの ** は禁止）
 3. 本文開始に「# タイトル」を置かない（## 見出しから開始）
 4. {g_config['guidance']}
+5. 前回のドラフトに含まれる図表プレースホルダー（{{PDF_FIGURE_X}}）や画像構文は削除せず、解説の文脈に合わせて維持または適切な位置に配置してください。
 
 以上の指示に従い、圧倒的クオリティへと生まれ変わった完全版 Markdown 記事を出力してください。
 """
 
+    _, fig_parts = build_figures_prompt_components(doc_info.get("figures"))
+
     if doc_info["doc_type"] == "pdf":
-        contents = [doc_info["pdf_part"], rewrite_prompt]
+        contents = [doc_info["pdf_part"]] + fig_parts + [rewrite_prompt]
     else:
         text_body = doc_info.get("text_content", "")[:35000]
-        contents = [f"【ドキュメント本文】\n{text_body}\n\n", rewrite_prompt]
+        contents = [f"【ドキュメント本文】\n{text_body}\n\n"] + fig_parts + [rewrite_prompt]
+
 
     candidate_models = [
         "gemini-3.8-flash",
@@ -1991,6 +2233,7 @@ def format_doc_post_for_yagibrary(
     quality: Dict[str, Any],
     history: Optional[List[Dict[str, Any]]] = None,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    figures: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """yagibrary (Astro) の形式に合わせて整形し、Frontmatter と Jev 診断レポートを付加"""
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
@@ -2053,6 +2296,11 @@ def format_doc_post_for_yagibrary(
 
     # 独立数式ブロックの正規化
     body = re.sub(r"(?<!\$)\$\$(?!\$)\s*([^\n]+?)\s*\$\$(?!\$)", r"\n\n$$\n\1\n$$\n\n", body)
+
+    # PDFから抽出された図表プレースホルダー（{{PDF_FIGURE_X}}）を Base64 データURLに置換
+    figs_to_embed = figures or doc_info.get("figures")
+    body = embed_figures_in_markdown(body, figs_to_embed)
+
 
     # 関連記事セクション（文脈の記憶・ネットワーク）
     related_section = ""
@@ -2188,7 +2436,9 @@ def run_file_pipeline(
         quality,
         history=history,
         relevant_posts=relevant_posts,
+        figures=doc_info.get("figures"),
     )
+
 
     # 4. ファイル名生成 & 保存
     today_str = datetime.now().strftime("%Y-%m-%d")
