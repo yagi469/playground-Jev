@@ -424,8 +424,15 @@ def fetch_arxiv_paper_figures(paper: Dict[str, Any], max_figures: int = 6) -> Li
         return []
 
 
-def build_figures_prompt_components(figures: Optional[List[Dict[str, Any]]]) -> Tuple[str, List[Any]]:
-    """図表リストから Gemini 用のプロンプト指示テキストと Part オブジェクトのリストを生成"""
+def build_figures_prompt_components(
+    figures: Optional[List[Dict[str, Any]]],
+    send_image_parts: bool = False,
+) -> Tuple[str, List[Any]]:
+    """
+    図表リストから Gemini 用のプロンプト指示テキストと Part オブジェクトのリストを生成。
+    send_image_parts=False (デフォルト) の場合、Gemini に画像バイナリを送信せずテキストメタデータのみを渡し、
+    入力トークン消費を完全にゼロに抑えます。
+    """
     if not figures:
         return "", []
 
@@ -435,22 +442,25 @@ def build_figures_prompt_components(figures: Optional[List[Dict[str, Any]]]) -> 
 
     for f in figures:
         fig_lines.append(
-            f"- `{f['placeholder']}`: (p.{f['page']} より抽出、サイズ {f['width']}x{f['height']}) "
+            f"- `{f['placeholder']}`: (文献 p.{f['page']} より抽出された図表、サイズ {f['width']}x{f['height']}) "
             f"-> 本文の該当する概念・モデル・実験グラフ・可換図式を解説する直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
         )
-        fig_parts.append(
-            types.Part.from_bytes(data=f["bytes"], mime_type=f["mime_type"])
-        )
+        if send_image_parts:
+            fig_parts.append(
+                types.Part.from_bytes(data=f["bytes"], mime_type=f["mime_type"])
+            )
 
     figures_instruction = f"""
-【★最重要指令：文献PDFから抽出された図表（Figure）の自動埋め込み】
-添付のPDFから以下の {len(figures)} 点の図表（画像）が抽出され、マルチモーダル入力として提示されています。
+【★文献から抽出された図表（Figure）の自動配置指示】
+文献から以下の {len(figures)} 点の図表が抽出されています。
 あなたが執筆する解説文の最もふさわしい位置（モデルの概念図、相図、数値計算グラフ、回路図、可換図式、アーキテクチャ図などを説明する箇所）に、
 必ず以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
 {chr(10).join(fig_lines)}
-※プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）は書き換えずにそのまま出力してください（記事保存時に自動的に高解像度画像へと置換されます）。
+※重要：プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）を出力するだけで結構です。
+※Base64文字列自体を出力する必要は一切ありません（記事保存時にPythonが自動的にBase64画像へと置換します）。
 """
     return figures_instruction, fig_parts
+
 
 
 def embed_figures_in_markdown(body: str, figures: Optional[List[Dict[str, Any]]]) -> str:
