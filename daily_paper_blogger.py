@@ -295,7 +295,7 @@ def extract_pdf_figures(
     pdf_path: str,
     pages_str: Optional[str] = None,
     page_indices: Optional[List[int]] = None,
-    max_figures: int = 8,
+    max_figures: int = 12,
     min_width: int = 120,
     min_height: int = 60,
     skip_front_matter: bool = True,
@@ -522,6 +522,10 @@ def embed_figures_in_markdown(
             else:
                 body += fallback_img
             print(f"  🖼️ 図の自動配置（フォールバック挿入）: p.{f['page']} ({f['width']}x{f['height']})")
+
+    # 未置換・存在しない図のプレースホルダー（LLMの幻覚等）を確実にクリーンアップしてViteビルドエラーを防止
+    body = re.sub(r"!\[.*?\]\(\{\{PDF_FIGURE_\d+\}\}\)\n?", "", body)
+    body = re.sub(r"\{\{PDF_FIGURE_\d+\}\}", "", body)
 
     return body
 
@@ -2011,7 +2015,7 @@ def load_and_process_local_file(
         pdf_figures = extract_pdf_figures(
             resolved_path,
             pages_str=effective_pages_str,
-            max_figures=8,
+            max_figures=12,
             skip_front_matter=True,
         )
         doc_info["figures"] = pdf_figures
