@@ -1693,14 +1693,113 @@ def extract_pdf_pages_bytes(pdf_path: str, pages_str: Optional[str] = None) -> T
     return pdf_bytes, label
 
 
+def detect_pdf_nombre_offset(
+    pdf_path: str,
+    target_printed_page: int,
+    total_pages: int,
+) -> int:
+    """
+    書籍の印刷ページ番号（ノンブル）とPDFの物理通し番号の差分（offset）を自動推定する。
+    PDFの物理ページ target_printed_page（またはその付近）を抽出し、
+    Gemini でページ下部・隅に印字されたノンブル（実印刷ページ番号）を読み取って差分を算出する。
+    """
+    global gemini_client
+    if gemini_client is None:
+        init_gemini_client()
+
+    probe_candidates = []
+    # 候補1: target_printed_page そのもの（もし total_pages の範囲内なら）
+    if 1 <= target_printed_page <= total_pages:
+        probe_candidates.append(target_printed_page)
+    # 候補2: target_printed_page - 5
+    if 1 <= target_printed_page - 5 <= total_pages:
+        probe_candidates.append(target_printed_page - 5)
+    # 候補3: target_printed_page + 5
+    if 1 <= target_printed_page + 5 <= total_pages:
+        probe_candidates.append(target_printed_page + 5)
+    # 候補4: 書籍前半（例: 60ページ目や50ページ目）
+    for fallback_p in [60, 50, 40]:
+        if fallback_p <= total_pages and fallback_p not in probe_candidates:
+            probe_candidates.append(fallback_p)
+
+    reader = PdfReader(pdf_path)
+    for probe_p in probe_candidates:
+        try:
+            writer = PdfWriter()
+            writer.add_page(reader.pages[probe_p - 1])
+            buf = io.BytesIO()
+            writer.write(buf)
+            page_bytes = buf.getvalue()
+            if not page_bytes:
+                continue
+
+            from google.genai import types
+            part = types.Part.from_bytes(data=page_bytes, mime_type="application/pdf")
+            prompt = f"""添付のPDFページは、ファイル全体の先頭から数えて【第 {probe_p} ページ目】（PDF物理ページ）です。
+このページの下部、ヘッダー、または隅（柱・ノンブル部分）に印刷されている【書籍自体のページ番号】（1つの整数、例: 330 や 24）を読み取ってください。
+
+以下のJSON形式のみを出力してください（Markdownの ```json ... ``` で囲んでください）:
+{{
+  "printed_page": 330
+}}
+※もし扉絵、白紙、見出しページなどで印刷ページ番号が全く印字されていない場合は、{{"printed_page": null}} としてください。
+"""
+            print(f"   🔍 [ノンブル照合] PDF物理第 {probe_p} ページをプローブして書籍ノンブルとのオフセットを算出中...")
+            res = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=[part, prompt]
+            )
+            raw = res.text
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+            data = json.loads(m.group(1)) if m else json.loads(raw.strip())
+            printed_p = data.get("printed_page")
+            if printed_p is not None and isinstance(printed_p, int):
+                offset = probe_p - printed_p
+                print(f"   📏 [ノンブル照合成功] PDF物理第 {probe_p} ページ ＝ 書籍ノンブル p.{printed_p} → オフセット: +{offset} ページ")
+                return offset
+        except Exception as e:
+            continue
+
+    print("   ℹ️ ノンブルの自動検出がスキップされました（オフセット: 0として処理）")
+    return 0
+
+
+def apply_offset_to_pages_str(pages_str: str, offset: int, total_pages: int) -> str:
+    """ページ範囲文字列（例: '366-378, 380'）にオフセットを加算して新しい範囲文字列を返す"""
+    if not offset or not pages_str:
+        return pages_str
+    parts = [p.strip() for p in pages_str.split(",") if p.strip()]
+    shifted_parts = []
+    for part in parts:
+        if "-" in part:
+            s_str, e_str = part.split("-", 1)
+            try:
+                s = max(1, min(int(s_str.strip()) + offset, total_pages))
+                e = max(s, min(int(e_str.strip()) + offset, total_pages))
+                shifted_parts.append(f"{s}-{e}")
+            except ValueError:
+                shifted_parts.append(part)
+        else:
+            try:
+                p = max(1, min(int(part) + offset, total_pages))
+                shifted_parts.append(str(p))
+            except ValueError:
+                shifted_parts.append(part)
+    res = ", ".join(shifted_parts)
+    print(f"   📏 [オフセット手動適用] 指定ページ p.{pages_str} に offset +{offset} を加算 → PDF物理 p.{res}")
+    return res
+
+
 def resolve_chapter_pages_from_toc(
     pdf_path: str,
     chapter_hint: str,
     total_pages: int,
+    manual_offset: Optional[int] = None,
 ) -> Optional[str]:
     """
     大部数PDF（書籍・マニュアル等）において、目次（TOC）または目次スキャンページから、
-    指定された章・テーマのページ範囲（例: '366-378'）を自動特定する。
+    指定された章・テーマのページ範囲（例: '366-378'）を自動特定し、
+    書籍の印刷ノンブルとPDF物理ページ番号のオフセットを補正した物理ページ範囲を返す。
     """
     if not chapter_hint or total_pages <= 40:
         return None
@@ -1777,16 +1876,28 @@ def resolve_chapter_pages_from_toc(
                 toc_data = json.loads(raw_text.strip())
 
             if toc_data.get("found"):
-                start_p = int(toc_data.get("start_page", 1))
-                end_p = int(toc_data.get("end_page", start_p + 15))
-                # ページ番号のバリデーション
-                start_p = max(1, min(start_p, total_pages))
-                end_p = max(start_p, min(end_p, total_pages))
+                book_start_p = int(toc_data.get("start_page", 1))
+                book_end_p = int(toc_data.get("end_page", book_start_p + 15))
+
+                # ノンブルオフセットの算出（手動指定があればそれを優先）
+                if manual_offset is not None:
+                    offset = manual_offset
+                else:
+                    offset = detect_pdf_nombre_offset(pdf_path, book_start_p, total_pages)
+
+                # PDF物理ページへのマッピング
+                real_start_p = max(1, min(book_start_p + offset, total_pages))
+                real_end_p = max(real_start_p, min(book_end_p + offset, total_pages))
+
                 # あまりに長すぎる場合は最大35ページ程度に収める
-                if end_p - start_p > 35:
-                    end_p = start_p + 35
-                range_str = f"{start_p}-{end_p}"
-                print(f"   🎯 [目次AIスキャン成功] 『{chapter_hint}』の掲載ページを自動特定しました: p.{range_str} (見出し: {toc_data.get('chapter_title')})")
+                if real_end_p - real_start_p > 35:
+                    real_end_p = real_start_p + 35
+
+                range_str = f"{real_start_p}-{real_end_p}"
+                print(f"   🎯 [目次AIスキャン＆オフセット補正成功] 『{chapter_hint}』の掲載ページを自動特定しました:")
+                print(f"      - 書籍ノンブル: p.{book_start_p}-{book_end_p}")
+                print(f"      - オフセット: +{offset} ページ")
+                print(f"      - PDF物理ページ: p.{range_str} (見出し: {toc_data.get('chapter_title')})")
                 return range_str
             else:
                 print(f"   ℹ️ 目次内に直接該当する見出しは見つかりませんでした（デフォルト走査を行います）。")
@@ -1801,6 +1912,7 @@ def load_and_process_local_file(
     pages_str: Optional[str] = None,
     chapter_hint: Optional[str] = None,
     genre: Optional[str] = "auto",
+    offset: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     ローカルの PDF または Markdown / Text ファイルを読み込み、Gemini 用のコンテンツオブジェクトと
@@ -1817,6 +1929,8 @@ def load_and_process_local_file(
     print(f"\n📂 [ローカルファイル読解] ファイル: {resolved_path} (拡張子: {ext})")
     if chapter_hint:
         print(f"   🎯 対象章/テーマ: {chapter_hint}")
+    if offset is not None:
+        print(f"   📏 指定オフセット: +{offset} ページ")
 
     doc_info: Dict[str, Any] = {
         "file_path": resolved_path,
@@ -1835,9 +1949,13 @@ def load_and_process_local_file(
         # ページ指定がなく章・テーマが指定されている場合、目次から自動特定を試みる
         effective_pages_str = pages_str
         if not effective_pages_str and chapter_hint and total_pages > 40:
-            auto_pages = resolve_chapter_pages_from_toc(resolved_path, chapter_hint, total_pages)
+            auto_pages = resolve_chapter_pages_from_toc(
+                resolved_path, chapter_hint, total_pages, manual_offset=offset
+            )
             if auto_pages:
                 effective_pages_str = auto_pages
+        elif effective_pages_str and offset is not None:
+            effective_pages_str = apply_offset_to_pages_str(effective_pages_str, offset, total_pages)
 
         pdf_bytes, page_label = extract_pdf_pages_bytes(resolved_path, effective_pages_str)
         doc_info["page_label"] = page_label
@@ -2555,6 +2673,7 @@ def run_file_pipeline(
     pages: Optional[str] = None,
     chapter: Optional[str] = None,
     genre: Optional[str] = "auto",
+    offset: Optional[int] = None,
     output_dir: Optional[str] = None,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
@@ -2565,6 +2684,8 @@ def run_file_pipeline(
         print(f" 📑 指定ページ: {pages}")
     if chapter:
         print(f" 🎯 指定章/テーマ: {chapter}")
+    if offset is not None:
+        print(f" 📏 指定オフセット: +{offset} ページ")
     if genre and genre != "auto":
         print(f" 📚 指定ジャンル: {genre}")
     print("=" * 65)
@@ -2580,7 +2701,13 @@ def run_file_pipeline(
     os.makedirs(target_dir, exist_ok=True)
 
     # 1. ファイル読込 & メタデータ抽出（Jev によるジャンル自動分類を含む）
-    doc_info = load_and_process_local_file(file_path, pages_str=pages, chapter_hint=chapter, genre=genre)
+    doc_info = load_and_process_local_file(
+        file_path,
+        pages_str=pages,
+        chapter_hint=chapter,
+        genre=genre,
+        offset=offset,
+    )
 
     # 過去記事インデックスから関連する記事を自動検索
     posts_index = load_existing_posts_index(target_dir)
@@ -2654,6 +2781,7 @@ if __name__ == "__main__":
     parser.add_argument("--pages", "-p", type=str, default="", help="PDFの対象ページ範囲（例: 15-30, 45）")
     parser.add_argument("--chapter", "-c", type=str, default="", help="フォーカスしたい章やテーマ（例: 'Chapter 1: The Basics of Production'）")
     parser.add_argument("--genre", "-g", type=str, default="auto", choices=["auto", "business", "tech", "physics", "general"], help="執筆ジャンル (デフォルト: auto)")
+    parser.add_argument("--offset", type=int, default=None, help="書籍ノンブル（印刷ページ番号）とPDF通し番号の差分オフセット（手動指定）")
     parser.add_argument("--max-papers", "-m", type=int, default=50, help="arXivから自動取得する件数 (デフォルト: 50)")
     parser.add_argument("--top-n", "-n", type=int, default=3, help="ブログ記事化する上位件数 (デフォルト: 3)")
     parser.add_argument("--output-dir", "-o", type=str, default=None, help="記事保存先ディレクトリ")
@@ -2677,6 +2805,7 @@ if __name__ == "__main__":
             pages=args.pages.strip() or None,
             chapter=args.chapter.strip() or None,
             genre=args.genre,
+            offset=args.offset,
             output_dir=args.output_dir
         )
     elif args.arxiv_id.strip():
