@@ -294,13 +294,16 @@ def fetch_arxiv_paper_content(arxiv_id: str) -> Optional[Dict[str, Any]]:
 def extract_pdf_figures(
     pdf_path: str,
     pages_str: Optional[str] = None,
+    page_indices: Optional[List[int]] = None,
     max_figures: int = 8,
     min_width: int = 120,
     min_height: int = 60,
+    skip_front_matter: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     PDFの指定ページから図（画像オブジェクト・グラフ・回路図・ダイアグラム等）を抽出し、
     Base64データURLとメタデータ（プレースホルダー、ページ番号、サイズ等）を生成して返す。
+    書籍等のスキャンPDF（全ページが画像）の場合、表紙や目次など本文外のページを自動除外します。
     """
     if fitz is None:
         print("  ⚠️ PyMuPDF (fitz) が利用できないため、PDF図表抽出をスキップします。'pip install pymupdf' を推奨します。")
@@ -315,7 +318,10 @@ def extract_pdf_figures(
     total_pages = len(doc)
     selected_indices = []
 
-    if pages_str and pages_str.strip():
+    if page_indices is not None and len(page_indices) > 0:
+        # 直接インデックスリストが渡された場合
+        selected_indices = [idx for idx in page_indices if 0 <= idx < total_pages]
+    elif pages_str and pages_str.strip():
         parts = pages_str.split(",")
         for part in parts:
             part = part.strip()
@@ -332,8 +338,13 @@ def extract_pdf_figures(
                 if 0 <= idx < total_pages:
                     selected_indices.append(idx)
     else:
-        # デフォルトは全ページ走査（上限30ページ）
-        selected_indices = list(range(min(30, total_pages)))
+        # ページ指定なしの場合
+        if total_pages > 20 and skip_front_matter:
+            # 書籍等の長大PDFでは、先頭10ページ（表紙、まえがき、目次等）をスキップして本文側を走査
+            start_idx = min(10, total_pages - 1)
+            selected_indices = list(range(start_idx, min(start_idx + 40, total_pages)))
+        else:
+            selected_indices = list(range(min(30, total_pages)))
 
     figures = []
     seen_xrefs = set()
@@ -341,7 +352,29 @@ def extract_pdf_figures(
 
     for pno in selected_indices:
         page = doc[pno]
+        page_rect = page.rect
         img_list = page.get_images()
+
+        # スキャン型PDF判定: ページ内に1枚だけ画像があり、それがページ全体（幅・高さが80%以上）を占めるか
+        is_single_full_page = False
+        if len(img_list) == 1:
+            try:
+                base_img_probe = doc.extract_image(img_list[0][0])
+                img_w = base_img_probe.get("width", 0)
+                img_h = base_img_probe.get("height", 0)
+                if page_rect.width > 0 and page_rect.height > 0:
+                    w_ratio = img_w / page_rect.width
+                    h_ratio = img_h / page_rect.height
+                    # スキャンPDFはアスペクト比がほぼページ全体と一致
+                    if w_ratio > 0.8 and h_ratio > 0.8:
+                        is_single_full_page = True
+            except Exception:
+                pass
+
+        # 書籍スキャンの先頭（表紙・中扉・目次）は図表として扱わない
+        if is_single_full_page and skip_front_matter and pno < 15:
+            continue
+
         for img in img_list:
             if len(figures) >= max_figures:
                 break
@@ -378,6 +411,7 @@ def extract_pdf_figures(
                 "width": w,
                 "height": h,
                 "page": pno + 1,
+                "is_full_page": is_single_full_page,
             })
             fig_idx += 1
 
@@ -443,7 +477,7 @@ def build_figures_prompt_components(
     for f in figures:
         fig_lines.append(
             f"- `{f['placeholder']}`: (文献 p.{f['page']} より抽出された図表、サイズ {f['width']}x{f['height']}) "
-            f"-> 本文の該当する概念・モデル・実験グラフ・可換図式を解説する直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
+            f"-> 本文の該当する概念・モデル・実験グラフ・アーキテクチャ図・設計図を解説する直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
         )
         if send_image_parts:
             fig_parts.append(
@@ -451,20 +485,24 @@ def build_figures_prompt_components(
             )
 
     figures_instruction = f"""
-【★文献から抽出された図表（Figure）の自動配置指示】
-文献から以下の {len(figures)} 点の図表が抽出されています。
-あなたが執筆する解説文の最もふさわしい位置（モデルの概念図、相図、数値計算グラフ、回路図、可換図式、アーキテクチャ図などを説明する箇所）に、
-必ず以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
+【★文献から抽出された図表（Figure）の選択的配置指示】
+文献から以下の {len(figures)} 点の図表候補が抽出されています。
+あなたが執筆する解説文の文脈（概念図、アーキテクチャ図、グラフ、実験結果などを説明する箇所）に真に合致する場合にのみ、
+ふさわしい位置に以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
 {chr(10).join(fig_lines)}
-※重要：プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）を出力するだけで結構です。
-※Base64文字列自体を出力する必要は一切ありません（記事保存時にPythonが自動的にBase64画像へと置換します）。
+※重要：文脈に合致しない図表や、書籍の表紙・目次・白紙等の不要な図表は、無理に記事に挿入しないでください（不要な図表は省略して結構です）。
+※プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）を出力するだけで結構です（保存時に自動的にBase64画像へと置換されます）。
 """
     return figures_instruction, fig_parts
 
 
 
-def embed_figures_in_markdown(body: str, figures: Optional[List[Dict[str, Any]]]) -> str:
-    """プレースホルダー {{PDF_FIGURE_X}} を Base64 データURLに置換し、未配置の図はフォールバック挿入"""
+def embed_figures_in_markdown(
+    body: str,
+    figures: Optional[List[Dict[str, Any]]],
+    auto_fallback: bool = False,
+) -> str:
+    """プレースホルダー {{PDF_FIGURE_X}} を Base64 データURLに置換。未配置の図は無理に強制挿入しない"""
     if not figures:
         return body
 
@@ -474,8 +512,8 @@ def embed_figures_in_markdown(body: str, figures: Optional[List[Dict[str, Any]]]
         if p_holder in body:
             body = body.replace(p_holder, data_url)
             print(f"  🖼️ 図の埋め込み成功: {p_holder} (p.{f['page']}, {f['width']}x{f['height']})")
-        else:
-            # Gemini が本文に配置し忘れた場合のフォールバック: まとめセクションの前または末尾に挿入
+        elif auto_fallback:
+            # 明示的に auto_fallback=True の場合のみ末尾フォールバック挿入（arXiv論文モード等）
             fallback_img = f"\n\n![文献 p.{f['page']} より抽出された図表]({data_url})\n\n"
             if "## まとめ" in body:
                 body = body.replace("## まとめ", f"{fallback_img}## まとめ", 1)
@@ -1694,14 +1732,7 @@ def load_and_process_local_file(
         doc_info["doc_type"] = "pdf"
         print(f"   📑 PDF 抽出完了: {page_label} ({len(pdf_bytes):,} bytes)")
 
-        # 図表（Figure）の抽出
-        pdf_figures = extract_pdf_figures(resolved_path, pages_str=pages_str, max_figures=8)
-        doc_info["figures"] = pdf_figures
-        if pdf_figures:
-            print(f"   🖼️ PDFから図表（Figure）を {len(pdf_figures)} 点抽出完了")
-
-        # Gemini に基本メタデータの抽出を依頼
-
+        # 1. Gemini に基本メタデータと対象章のページ範囲特定を依頼
         meta_prompt = f"""添付のPDFドキュメント（抽出範囲: {page_label}、指定テーマ/章: {chapter_hint or '指定なし'}）の内容を読み取り、
 以下のJSON形式でメタデータを出力してください。Markdownの```json ... ```形式で囲んでください。
 {{
@@ -1710,7 +1741,8 @@ def load_and_process_local_file(
   "summary": "このドキュメント/対象セクションで論じられている核心内容の要約（150〜250文字）",
   "genre": "business（ビジネス・マネジメント・組織論・経済）, tech（ソフトウェア・システム設計・工学）, physics（数理物理・理論物理・量子・科学論文）, general（一般教養・その他）のいずれか1つを必ず選択",
   "categories": ["ドキュメント内容に即した適切なカテゴリタグ3〜4個（例: マネジメント, 組織論, 生産性 / 場の量子論, 超弦理論 / アーキテクチャ, クラウド 等）"],
-  "subfield": "具体的な専門分野やテーマ（例: 組織マネジメント, 生産管理, カイラル代数, 分散システム 等）"
+  "subfield": "具体的な専門分野やテーマ（例: 組織マネジメント, 生産管理, カイラル代数, 分散システム 等）",
+  "chapter_pages": "指定された章やテーマ（{chapter_hint or '指定なし'}）が論じられているPDF内のページ範囲（例: '27-60'、不明な場合は空文字）"
 }}
 """
         try:
@@ -1736,6 +1768,24 @@ def load_and_process_local_file(
             }
 
         doc_info.update(meta)
+
+        # 2. 図表（Figure）の抽出（対象章のページ範囲が判明した場合は絞り込んで抽出）
+        effective_pages_str = pages_str
+        if not effective_pages_str and meta.get("chapter_pages"):
+            ch_pages = str(meta["chapter_pages"]).strip()
+            if re.match(r"^\d+\s*-\s*\d+$", ch_pages) or ch_pages.isdigit():
+                effective_pages_str = ch_pages
+                print(f"   🎯 対象章の特定ページ範囲から図表を抽出します: p.{effective_pages_str}")
+
+        pdf_figures = extract_pdf_figures(
+            resolved_path,
+            pages_str=effective_pages_str,
+            max_figures=8,
+            skip_front_matter=True,
+        )
+        doc_info["figures"] = pdf_figures
+        if pdf_figures:
+            print(f"   🖼️ PDFから図表（Figure）を {len(pdf_figures)} 点抽出完了")
 
     elif ext in [".md", ".markdown", ".txt"]:
         with open(resolved_path, "r", encoding="utf-8") as f:
