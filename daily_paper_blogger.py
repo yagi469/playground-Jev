@@ -2531,9 +2531,14 @@ def format_doc_post_for_yagibrary(
     figures: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """yagibrary (Astro) の形式に合わせて整形し、Frontmatter と Jev 診断レポートを付加"""
-    frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
+    clean_md = raw_markdown.strip()
+    if clean_md.startswith("```"):
+        clean_md = re.sub(r"^```(?:markdown)?\s*\n", "", clean_md)
+        clean_md = re.sub(r"\n```\s*$", "", clean_md).strip()
+
+    frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", clean_md, re.DOTALL)
     parsed_meta = {}
-    body = raw_markdown.strip()
+    body = clean_md
 
     if frontmatter_match:
         yaml_content = frontmatter_match.group(1)
@@ -2679,6 +2684,7 @@ def run_file_pipeline(
     genre: Optional[str] = "auto",
     offset: Optional[int] = None,
     output_dir: Optional[str] = None,
+    custom_filename: Optional[str] = None,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
     print("\n" + "=" * 65)
@@ -2692,6 +2698,8 @@ def run_file_pipeline(
         print(f" 📏 指定オフセット: +{offset} ページ")
     if genre and genre != "auto":
         print(f" 📚 指定ジャンル: {genre}")
+    if custom_filename:
+        print(f" 🏷️ 指定保存ファイル名: {custom_filename}")
     print("=" * 65)
 
     if output_dir is None:
@@ -2747,17 +2755,22 @@ def run_file_pipeline(
     # 4. ファイル名生成 & 保存
     today_str = datetime.now().strftime("%Y-%m-%d")
     base_name = os.path.splitext(doc_info["file_name"])[0]
-    # ファイル名用の安全なスラッグ
-    safe_slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", base_name).strip("-").lower()
-    if not safe_slug:
-        safe_slug = "doc-note"
 
-    if chapter:
-        safe_ch = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chapter).strip("-").lower()[:20]
-        if safe_ch:
-            safe_slug = f"{safe_slug}-{safe_ch}"
+    if custom_filename:
+        filename = custom_filename if custom_filename.endswith(".md") else f"{custom_filename}.md"
+    else:
+        # ファイル名用の安全なスラッグ
+        safe_slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", base_name).strip("-").lower()
+        if not safe_slug:
+            safe_slug = "doc-note"
 
-    filename = f"{today_str}-{safe_slug}.md"
+        if chapter:
+            safe_ch = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chapter).strip("-").lower()[:20]
+            if safe_ch:
+                safe_slug = f"{safe_slug}-{safe_ch}"
+
+        filename = f"{today_str}-{safe_slug}.md"
+
     out_file_path = os.path.join(target_dir, filename)
 
     # 重複がある場合はインデックスを付与
@@ -2777,9 +2790,156 @@ def run_file_pipeline(
     return [out_file_path]
 
 
+# ==============================================================================
+# 書籍キュー管理 ＆ 自律連載パイプライン
+# ==============================================================================
+DEFAULT_BOOK_QUEUE_PATH = os.getenv(
+    "BOOK_QUEUE_PATH",
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "../yagibrary/docs/book_queue.json"))
+)
+
+
+def load_book_queue(queue_path: str = DEFAULT_BOOK_QUEUE_PATH) -> Dict[str, Any]:
+    """書籍キューファイルを読み込む"""
+    if not os.path.exists(queue_path):
+        raise FileNotFoundError(f"書籍キューファイルが見つかりません: {queue_path}")
+    with open(queue_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_book_queue(queue_data: Dict[str, Any], queue_path: str = DEFAULT_BOOK_QUEUE_PATH):
+    """書籍キューファイルをアトミックに保存"""
+    tmp_path = f"{queue_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(queue_data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, queue_path)
+
+
+def get_next_queue_task(queue_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """次に執筆・投稿すべき未公開章（pending）を探索して返す"""
+    order = queue_data.get("queue_order", [])
+    active_id = queue_data.get("active_book_id")
+    if active_id and active_id in order:
+        idx = order.index(active_id)
+        search_order = order[idx:] + order[:idx]
+    else:
+        search_order = order
+
+    for book_id in search_order:
+        book = queue_data.get("books", {}).get(book_id)
+        if not book:
+            continue
+        chapters = book.get("chapters", [])
+        for ch in chapters:
+            if ch.get("status") == "pending":
+                return {
+                    "book_id": book_id,
+                    "book": book,
+                    "chapter": ch,
+                }
+    return None
+
+
+def run_queue_pipeline(
+    queue_path: str = DEFAULT_BOOK_QUEUE_PATH,
+    dry_run: bool = False,
+    output_dir: Optional[str] = None
+) -> List[str]:
+    """書籍キューを読み込み、次の未公開章を自律執筆してキューを更新する"""
+    print("\n" + "=" * 65)
+    print(" 📚 書籍連載自動キューパイプライン (Book Queue Runner) 起動")
+    print(f" 📂 キューファイル: {queue_path}")
+    print("=" * 65)
+
+    queue_data = load_book_queue(queue_path)
+    task = get_next_queue_task(queue_data)
+    if not task:
+        print(" 🎉 すべての書籍の全章がすでに公開済みです。キューに未処理タスクはありません。")
+        return []
+
+    book_id = task["book_id"]
+    book = task["book"]
+    chapter = task["chapter"]
+    ch_num = chapter.get("chapter")
+    ch_title = chapter.get("title", "")
+    pages = chapter.get("pages")
+    genre = book.get("genre", "business")
+    slug = book.get("slug")
+
+    # 本のファイルパス解決（yagibrary 相対パスの可能性を考慮）
+    raw_file_path = chapter.get("file_path") or book.get("file_path")
+    if not raw_file_path:
+        raise ValueError(f"書籍 {book_id} に file_path が指定されていません。")
+
+    if not os.path.isabs(raw_file_path):
+        candidates = [
+            raw_file_path,
+            os.path.normpath(os.path.join(os.path.dirname(__file__), "../yagibrary", raw_file_path)),
+            os.path.normpath(os.path.join(os.path.dirname(__file__), raw_file_path)),
+            os.path.normpath(os.path.join(os.path.dirname(queue_path), "..", raw_file_path)),
+        ]
+        resolved_file = None
+        for c in candidates:
+            if os.path.exists(c):
+                resolved_file = c
+                break
+        if not resolved_file:
+            raise FileNotFoundError(f"書籍ファイルが見つかりません: {raw_file_path} (探索候補: {candidates})")
+    else:
+        resolved_file = raw_file_path
+
+    # カスタムファイル名の決定（例: rich-dads-cashflow-quadrant-ch3.md）
+    custom_filename = None
+    if slug and ch_num:
+        custom_filename = f"{slug}-ch{ch_num}.md"
+
+    print(f"\n📖 次の対象タスク:")
+    print(f"   書籍: {book.get('title')} (ID: {book_id})")
+    print(f"   章: {ch_title} (第{ch_num}章)")
+    print(f"   ファイル: {resolved_file}")
+    if pages:
+        print(f"   ページ範囲: {pages}")
+    if custom_filename:
+        print(f"   保存ファイル名: {custom_filename}")
+
+    if dry_run:
+        print("\n🔎 [DRY RUN] 記事生成はスキップしました。キューとファイルパスの整合性は正常です。")
+        return []
+
+    # 記事執筆を実行！
+    out_files = run_file_pipeline(
+        file_path=resolved_file,
+        pages=pages,
+        chapter=ch_title,
+        genre=genre,
+        custom_filename=custom_filename,
+        output_dir=output_dir,
+    )
+
+    if out_files:
+        created_file = out_files[0]
+        created_filename = os.path.basename(created_file)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # キュー更新
+        chapter["status"] = "published"
+        chapter["post_file"] = created_filename
+        chapter["published_at"] = today_str
+        queue_data["active_book_id"] = book_id
+
+        save_book_queue(queue_data, queue_path)
+        print(f"\n✅ キューを正常に更新しました: {book_id} / 第{ch_num}章 -> published ({created_filename})")
+
+    return out_files
+
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="arXiv / Document × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
+    parser = argparse.ArgumentParser(description="arXiv / Book Queue / Document × TypeSafe Jev × Gemini 自律型ブログ執筆パイプライン")
+    parser.add_argument("--queue", "-q", action="store_true", default=False, help="書籍キュー (book_queue.json) から次の未公開章を自律執筆（デフォルト動作）")
+    parser.add_argument("--queue-path", type=str, default=DEFAULT_BOOK_QUEUE_PATH, help="書籍キューファイルのパス")
+    parser.add_argument("--dry-run-queue", action="store_true", help="キューから次のタスクを特定・確認するが、記事執筆は行わない")
+    parser.add_argument("--arxiv-daily", action="store_true", help="arXiv の日次自動スクリーニングモードを実行（旧デフォルト）")
     parser.add_argument("--arxiv-id", "-a", type=str, default="", help="特定の arXiv 論文番号（カンマ区切りで複数可。例: 2006.13892）")
     parser.add_argument("--file", "-f", type=str, default="", help="ローカルのPDFまたはMarkdownファイルパス（例: docs/high_output_management.pdf）")
     parser.add_argument("--pages", "-p", type=str, default="", help="PDFの対象ページ範囲（例: 15-30, 45）")
@@ -2816,9 +2976,16 @@ if __name__ == "__main__":
         # 特定論文指定モード
         target_ids = [aid.strip() for aid in args.arxiv_id.split(",") if aid.strip()]
         run_targeted_pipeline(arxiv_ids=target_ids, output_dir=args.output_dir)
-    else:
-        # 自動スクリーニングモード
+    elif args.arxiv_daily:
+        # arXiv 自動スクリーニングモード
         run_daily_pipeline(max_papers=args.max_papers, top_n_to_blog=args.top_n, output_dir=args.output_dir)
+    else:
+        # デフォルト: 書籍キュー自動連載モード
+        run_queue_pipeline(
+            queue_path=args.queue_path,
+            dry_run=args.dry_run_queue,
+            output_dir=args.output_dir
+        )
 
 
 

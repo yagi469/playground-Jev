@@ -1,4 +1,4 @@
-name: Daily arXiv Paper Blogger
+name: Daily Book & Paper Blogger
 
 on:
   # schedule:
@@ -71,6 +71,7 @@ jobs:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YAGIBRARY_POSTS_DIR: ${{ github.workspace }}/yagibrary/src/content/posts
+          BOOK_QUEUE_PATH: ${{ github.workspace }}/yagibrary/docs/book_queue.json
         run: |
           RAW_FILE_PATH="${{ github.event.inputs.file_path }}"
           FILE_PATH=$(echo "$RAW_FILE_PATH" | tr '\\' '/' | xargs)
@@ -92,10 +93,8 @@ jobs:
             echo "🎯 Targeted paper mode: arXiv ID = $ARXIV_ID"
             python daily_paper_blogger.py --arxiv-id "$ARXIV_ID"
           else
-            MAX_PAPERS="${{ github.event.inputs.max_papers || '50' }}"
-            TOP_N="${{ github.event.inputs.top_n_to_blog || '3' }}"
-            echo "🚀 Auto-screening mode (max_papers=$MAX_PAPERS, top_n=$TOP_N)..."
-            python daily_paper_blogger.py --max-papers "$MAX_PAPERS" --top-n "$TOP_N"
+            echo "🚀 Book queue auto mode..."
+            python daily_paper_blogger.py --queue
           fi
 
       - name: Commit and push changes to yagibrary
@@ -104,13 +103,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git status
-          if [ -n "$(git status --porcelain src/content/posts)" ]; then
-            git add src/content/posts
+          if [ -n "$(git status --porcelain src/content/posts docs/book_queue.json)" ]; then
+            git add src/content/posts docs/book_queue.json
             TODAY=$(date +'%Y-%m-%d')
             git commit -m "post: auto-generate blog article for ${TODAY}"
             git pull --rebase origin master
             git push origin master
-            echo "✅ Successfully pushed new articles to yagibrary! This triggers deploy.yml on yagibrary."
+            echo "✅ Successfully pushed new articles and book_queue.json to yagibrary! This triggers deploy.yml on yagibrary."
           else
             echo "ℹ️ No new articles were generated to commit."
           fi
