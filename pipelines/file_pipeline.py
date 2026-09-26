@@ -15,6 +15,7 @@ from core.post_formatter import (
     format_doc_post_for_yagibrary,
 )
 from generators.doc_generator import generate_refined_doc_blog_post
+from .pipeline_utils import resolve_output_filepath
 
 
 def run_file_pipeline(
@@ -97,37 +98,16 @@ def run_file_pipeline(
 
     # 4. ファイル名生成 & 保存（日付プレフィックスは付与せず、意味のある英字スラッグを使用）
     base_name = os.path.splitext(doc_info["file_name"])[0]
+    raw_slug = doc_info.get("slug") or ""
+    base_slug = raw_slug or base_name or (f"{doc_info.get('genre', 'doc')}-note")
 
-    if custom_filename:
-        filename = custom_filename if custom_filename.endswith(".md") else f"{custom_filename}.md"
-        safe_slug = os.path.splitext(filename)[0]
-    else:
-        # doc_info に含まれるスラッグ（Gemini による自動抽出）、またはファイル名からスラッグ生成
-        raw_slug = doc_info.get("slug") or ""
-        safe_slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", raw_slug).strip("-_").lower()
-
-        if not safe_slug:
-            safe_slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", base_name).strip("-_").lower()
-
-        if not safe_slug:
-            sub = doc_info.get("genre", "doc")
-            safe_slug = f"{sub}-note"
-
-        if chapter and not doc_info.get("slug"):
-            safe_ch = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chapter).strip("-_").lower()[:20]
-            if safe_ch:
-                safe_slug = f"{safe_slug}-{safe_ch}"
-
-        filename = f"{safe_slug}.md"
-
-    out_file_path = os.path.join(target_dir, filename)
-
-    # 重複がある場合はインデックスを付与（例: slug-2.md）
-    counter = 1
-    while os.path.exists(out_file_path):
-        counter += 1
-        filename = f"{safe_slug}-{counter}.md"
-        out_file_path = os.path.join(target_dir, filename)
+    out_file_path = resolve_output_filepath(
+        base_slug=base_slug,
+        target_dir=target_dir,
+        pages=pages,
+        chapter=chapter,
+        custom_filename=custom_filename,
+    )
 
     with open(out_file_path, "w", encoding="utf-8") as f:
         f.write(final_post)

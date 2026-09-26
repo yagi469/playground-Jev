@@ -20,6 +20,7 @@ from generators.paper_generator import (
     screen_and_rank_papers_with_jev,
     generate_refined_blog_post,
 )
+from .pipeline_utils import resolve_output_filepath
 
 
 def run_targeted_pipeline(
@@ -27,6 +28,8 @@ def run_targeted_pipeline(
     output_dir: Optional[str] = None,
     genre: Optional[str] = "auto",
     pages: Optional[str] = None,
+    chapter: Optional[str] = None,
+    custom_filename: Optional[str] = None,
 ) -> List[str]:
     """特定の arXiv ID を指定してピンポイントでブログ記事を執筆・保存するモード"""
     print("\n" + "=" * 65)
@@ -134,8 +137,15 @@ def run_targeted_pipeline(
         )
 
         clean_id = paper['arxiv_id'].replace('/', '_').replace('.', '-')
-        filename = f"arxiv-{clean_id}.md"
-        file_path = os.path.join(target_dir, filename)
+        base_slug = f"arxiv-{clean_id}"
+
+        file_path = resolve_output_filepath(
+            base_slug=base_slug,
+            target_dir=target_dir,
+            pages=pages,
+            chapter=chapter,
+            custom_filename=custom_filename,
+        )
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(final_post)
