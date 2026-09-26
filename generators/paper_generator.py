@@ -93,7 +93,7 @@ def screen_and_rank_papers_with_jev(papers: List[Dict[str, Any]]) -> List[Dict[s
                 state={"paper": summary_text},
                 questions=questions,
             )
-            is_core = result.nouls["is_math_physics_core"].confidence
+            is_core = result.nouls["is_math_physics_core"].noul
             match_score = result.scores["user_interest_match"].score
             depth_score = result.scores["theoretical_depth"].score
             appeal_score = result.scores["blog_appeal"].score
