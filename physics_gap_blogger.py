@@ -53,6 +53,152 @@ DEFAULT_YAGIBRARY_POSTS_DIR = os.getenv(
     os.path.normpath(os.path.join(os.path.dirname(__file__), "../yagibrary/src/content/posts"))
 )
 
+# ==============================================================================
+# ジャンル別設定（プロンプト・キーワード・タグを自動切替）
+# ==============================================================================
+GENRE_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "physics": {
+        "label": "⚛️  Physics Gap Blogger（物理行間埋めブロガー）",
+        "keywords": {
+            "量子力学", "場の量子論", "素粒子論", "超弦理論", "数理物理", "AdS/CFT",
+            "超対称", "対称性", "ゲージ理論", "統計力学", "解析力学", "相対論",
+        },
+        "default_tags": ["物理学", "数理物理", "式変形"],
+        "default_fallback_tags": ["物理学", "数理物理"],
+        "default_title": "物理の行間を埋める導出ノート",
+        "default_summary": "物理学の教科書・論文における式変形の行間を補完・徹底解説。",
+        "default_slug": "physics-derivation",
+        "meta_footer": "本記事は教科書・論文の行間（非自明な途中計算や物理的仮定）を補完するために Gemini マルチモーダル解析によって生成・整理された導出解説です。",
+        "persona": "場の量子論、数理物理学、超弦理論、理論物理学全般の最前線を探究する一流の理論物理学者兼サイエンスブロガー",
+        "reader_level": "物理学の修士課程修了レベル以上の知識を持つ者（または意欲的な研究者・院生）",
+        "gap_fill_title": "物理・数学のギャップを徹底的に埋め、難解な解説を解きほぐす",
+        "gap_fill_aspects": [
+            {
+                "title": "数式変形の行間埋め（数理的厳密性）",
+                "bullets": [
+                    "ゲージ固定、基底の選択、自然単位系の規約",
+                    "表面項・境界項をどのような境界条件でゼロとして落としたか",
+                    "どの微小パラメータに関する何次の近似か（テイラー展開、摂動展開、鞍点近似、双極子近似など）",
+                    "演算子の交換関係 [A, B]、テンソル縮約公式、ディラック行列のトレース公式、積分経路・留数計算などの非自明なステップを省略なしで KaTeX 展開",
+                    "※「両辺を移項して2で割ると…」のような中学生レベルの四則演算の説明は省き、物理的・数学的な核心の跳躍に集中すること。",
+                ],
+            },
+            {
+                "title": "難解な概念・定性解説のかみ砕き（物理的直観と言語化）",
+                "bullets": [
+                    "著者が抽象的な専門用語でサラッと述べている定性的な主張について、『要するに物理的に何が起きているのか？』を直観的・幾何学的な描像で解きほぐす。",
+                    "なぜ著者はそのような物理的設定やアナロジーを引いているのか、その背後にある本質的な動機（対称性の要請、因果律、ユニタリティ、自由度の数え上げ等）を明快に言語化する。",
+                    "読者が『なるほど、著者が言いたかったのはこういう描像だったのか！』と腑に落ちる解説を提供する。",
+                ],
+            },
+        ],
+        "slug_examples": "nakahara-tangent-bundle-structure-group, klein-gordon-hamiltonian-diagonalization, fibre-bundle-sections-gauge-field",
+        "tag_examples": "場の量子論, 量子力学, 解析力学, 統計力学, 相対論",
+        "title_template": '「○○の導出：教科書が省略した式(X)から(Y)への行間を埋める」のような、物理的本質と知的好奇心を突いた日本語タイトル',
+        "opinion_section_title": "で、なぜ著者はこのような説明・省略をしたのか？（物理的考察）",
+        "opinion_description": "著者の意図や時代背景、数学的必然性や物理的直観を熱量高く語る。",
+    },
+    "stats": {
+        "label": "📊 Stats Gap Blogger（統計学・データサイエンス行間埋めブロガー）",
+        "keywords": {
+            "回帰分析", "最小二乗法", "最尤推定", "ベイズ推定", "仮説検定", "信頼区間",
+            "分散分析", "主成分分析", "ロジスティック回帰", "正則化", "交差検証",
+            "確率分布", "マルコフ連鎖", "ブートストラップ", "カーネル法", "深層学習",
+            "勾配降下法", "情報量規準", "尤度", "共分散", "相関", "多重共線性",
+            "データサイエンス", "統計学", "機械学習", "Ridge", "Lasso", "MCMC",
+        },
+        "default_tags": ["統計学", "データサイエンス", "数式導出"],
+        "default_fallback_tags": ["統計学", "データサイエンス"],
+        "default_title": "統計学の行間を埋める導出ノート",
+        "default_summary": "統計学・データサイエンスの教科書における数式の行間を補完・徹底解説。",
+        "default_slug": "stats-derivation",
+        "meta_footer": "本記事は統計学・データサイエンスの教科書における数式導出や概念の行間を補完するために Gemini マルチモーダル解析によって生成・整理された解説です。",
+        "persona": "統計学・データサイエンス・機械学習の理論と実践を熟知した一流の統計学者兼データサイエンス・ブロガー",
+        "reader_level": "統計学・データサイエンスの学部上級〜修士レベルの知識を持つ者（またはデータ分析の実務経験者）",
+        "gap_fill_title": "統計学・データサイエンスのギャップを徹底的に埋め、難解な理論を解きほぐす",
+        "gap_fill_aspects": [
+            {
+                "title": "数式導出の行間埋め（数理的厳密性）",
+                "bullets": [
+                    "推定量の導出過程（最尤推定、モーメント法、ベイズ推定）における微分・最適化ステップ",
+                    "分散・共分散の計算、期待値の線形性や条件付き期待値の操作",
+                    "正規方程式、勾配ベクトル、ヘッセ行列の導出と正定値性の確認",
+                    "正則化項（L1/L2ペナルティ）がどのように目的関数を変形し、推定量にバイアスを導入するか",
+                    "漸近理論（大数の法則、中心極限定理）から検定統計量の分布をどう導くか",
+                    "※ 単純な代入や移項の説明は省き、統計的・数理的に非自明な跳躍に集中すること。",
+                ],
+            },
+            {
+                "title": "難解な概念・直観のかみ砕き（統計的思考と実践への橋渡し）",
+                "bullets": [
+                    "著者が専門用語でサラッと述べている概念（例: 十分統計量、フィッシャー情報量、バイアス-分散トレードオフ）を、『要するにデータ分析の現場で何を意味するのか？』という視点で解きほぐす。",
+                    "なぜその仮定（正規性、独立同分布、線形性）を置くのか、それが崩れたとき何が起きるかを具体例で解説する。",
+                    "理論と実装の対応（例: 数式の各項がPython/Rのコードのどこに対応するか）を必要に応じて示す。",
+                    "読者が『教科書の抽象的な議論が実際のデータにどう効くのか』腑に落ちる解説を提供する。",
+                ],
+            },
+        ],
+        "slug_examples": "ols-normal-equation-derivation, ridge-regression-bias-variance, maximum-likelihood-logistic-regression",
+        "tag_examples": "回帰分析, ベイズ統計, 機械学習, 仮説検定, 正則化",
+        "title_template": '「○○の導出：教科書が省略した推定量の分散計算／正規方程式への行間を埋める」のような、統計的本質と知的好奇心を突いた日本語タイトル',
+        "opinion_section_title": "で、なぜ著者はこのような説明・省略をしたのか？（統計学的考察）",
+        "opinion_description": "著者の意図、歴史的経緯、数理的必然性、実務上の重要性を熱量高く語る。",
+    },
+    "general": {
+        "label": "📖 General Gap Blogger（汎用行間埋めブロガー）",
+        "keywords": {
+            "証明", "定理", "導出", "数式", "微積分", "線形代数", "最適化",
+            "アルゴリズム", "計算量", "情報理論", "制御理論", "信号処理",
+        },
+        "default_tags": ["数学", "理論解説", "式変形"],
+        "default_fallback_tags": ["数学", "理論解説"],
+        "default_title": "理論の行間を埋める導出ノート",
+        "default_summary": "教科書・論文における数式や理論の行間を補完・徹底解説。",
+        "default_slug": "theory-derivation",
+        "meta_footer": "本記事は教科書・論文における理論・数式の行間を補完するために Gemini マルチモーダル解析によって生成・整理された解説です。",
+        "persona": "数学・理論科学全般を横断的に理解する一流の研究者兼サイエンスブロガー",
+        "reader_level": "大学学部上級〜修士レベルの数学・理論的素養を持つ者",
+        "gap_fill_title": "理論・数式のギャップを徹底的に埋め、難解な解説を解きほぐす",
+        "gap_fill_aspects": [
+            {
+                "title": "数式変形の行間埋め（数理的厳密性）",
+                "bullets": [
+                    "証明や導出で省略された中間ステップを明示",
+                    "暗黙的に使われている仮定・前提条件を抽出",
+                    "非自明な変形（テイラー展開、積分の交換、近似の正当化等）を省略なしで KaTeX 展開",
+                    "※ 自明な四則演算の説明は省き、数理的に核心の跳躍に集中すること。",
+                ],
+            },
+            {
+                "title": "難解な概念・定性解説のかみ砕き（直観と言語化）",
+                "bullets": [
+                    "抽象的な専門用語の定性的な主張を、直観的な描像で解きほぐす。",
+                    "著者の主張の背後にある本質的な動機を明快に言語化する。",
+                    "読者が『なるほど、こういうことだったのか！』と腑に落ちる解説を提供する。",
+                ],
+            },
+        ],
+        "slug_examples": "matrix-decomposition-proof, convex-optimization-kkt, information-entropy-derivation",
+        "tag_examples": "線形代数, 最適化, 情報理論, アルゴリズム",
+        "title_template": '「○○の導出：教科書が省略した定理の証明／式変形への行間を埋める」のような、理論的本質と知的好奇心を突いた日本語タイトル',
+        "opinion_section_title": "で、なぜ著者はこのような説明・省略をしたのか？（考察）",
+        "opinion_description": "著者の意図、歴史的背景、数理的必然性を熱量高く語る。",
+    },
+}
+
+
+def get_genre_config(genre: str) -> Dict[str, Any]:
+    """ジャンル名からコンフィグを取得（エイリアス対応）"""
+    aliases = {
+        "physics": "physics", "phys": "physics", "物理": "physics",
+        "stats": "stats", "statistics": "stats", "統計": "stats",
+        "datascience": "stats", "ds": "stats", "ml": "stats",
+        "general": "general", "汎用": "general", "math": "general",
+    }
+    key = aliases.get(genre.lower().strip(), "physics")
+    return GENRE_CONFIGS[key]
+
+
 gemini_client = None
 
 
@@ -337,15 +483,14 @@ def find_relevant_past_posts(
     current_text: str,
     posts_index: List[Dict[str, Any]],
     max_matches: int = 3,
+    genre: str = "physics",
 ) -> List[Dict[str, Any]]:
-    """物理関連の過去記事から最も関連度の高い記事を抽出"""
+    """ジャンルに応じたキーワードで過去記事から最も関連度の高い記事を抽出"""
     if not posts_index:
         return []
 
-    physics_keywords = {
-        "量子力学", "場の量子論", "素粒子論", "超弦理論", "数理物理", "AdS/CFT",
-        "超対称", "対称性", "ゲージ理論", "統計力学", "解析力学", "相対論"
-    }
+    config = get_genre_config(genre)
+    keywords = config["keywords"]
 
     scored = []
     for post in posts_index:
@@ -354,7 +499,7 @@ def find_relevant_past_posts(
         tags = [str(t).lower() for t in post.get("tags", [])]
 
         score = 0
-        for kw in physics_keywords:
+        for kw in keywords:
             if kw.lower() in title.lower() or kw.lower() in summary.lower() or any(kw.lower() in t for t in tags):
                 score += 5
             if kw.lower() in current_text.lower():
@@ -368,7 +513,7 @@ def find_relevant_past_posts(
 
 
 # ==============================================================================
-# 3. Gemini による物理行間埋め記事の執筆
+# 3. Gemini によるジャンル対応行間埋め記事の執筆
 # ==============================================================================
 def generate_physics_gap_post(
     contents: List[Any],
@@ -378,9 +523,11 @@ def generate_physics_gap_post(
     source_post: Optional[Dict[str, Any]] = None,
     figures: Optional[List[Dict[str, Any]]] = None,
     model_name: str = "gemini-3.8-flash",
+    genre: str = "physics",
 ) -> str:
-    """Gemini を用いて大学院レベルの厳密な物理行間埋めブログ記事を生成"""
+    """Gemini を用いてジャンルに応じた厳密な行間埋めブログ記事を生成"""
     client = init_gemini_client()
+    config = get_genre_config(genre)
 
     related_context = ""
     if relevant_posts:
@@ -410,7 +557,6 @@ def generate_physics_gap_post(
                 f"- `{f['placeholder']}`: (PDF p.{f['page']} より抽出、サイズ {f['width']}x{f['height']}) "
                 f"-> 本文の該当する概念や式変形の直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
             )
-            # Gemini に図の内容そのものを見せるために Part を作成
             fig_parts.append(
                 types.Part.from_bytes(data=f["bytes"], mime_type=f["mime_type"])
             )
@@ -418,7 +564,7 @@ def generate_physics_gap_post(
         figures_instruction = f"""
 【★最重要指令：教科書PDFから抽出された図（Figure）の自動埋め込み】
 添付のPDFから以下の {len(figures)} 点の図（画像）が抽出され、マルチモーダル入力として提示されています。
-あなたが執筆する解説文の最もふさわしい位置（ファイバー束の局所自明化、切断の可換図式、座標変換などを説明する箇所）に、
+あなたが執筆する解説文の最もふさわしい位置に、
 必ず以下のプレースホルダーを用いて Markdown 画像構文を挿入してください：
 {chr(10).join(fig_lines)}
 ※プレースホルダー記号（`{{{{PDF_FIGURE_1}}}}` など）は書き換えずにそのまま出力してください（記事保存時に自動的に高解像度 Base64 画像へと置換されます）。
@@ -427,29 +573,23 @@ def generate_physics_gap_post(
     title_instruction = (
         f'title: "{preferred_title}"'
         if preferred_title
-        else 'title: "「○○の導出：教科書が省略した式(X)から(Y)への行間を埋める」のような、物理的本質と知的好奇心を突いた日本語タイトル"'
+        else f'title: "{config["title_template"]}"'
     )
 
-    system_prompt = f"""あなたは場の量子論、数理物理学、超弦理論、理論物理学全般の最前線を探究する一流の理論物理学者兼サイエンスブロガーです。
-あなたの読者は物理学の修士課程修了レベル以上の知識を持つ者（または意欲的な研究者・院生）です。
+    # ジャンル別のギャップ埋め指針を組み立て
+    gap_aspects_text = ""
+    for i, aspect in enumerate(config["gap_fill_aspects"], 1):
+        bullets = "\n".join(f"   - {b}" for b in aspect["bullets"])
+        gap_aspects_text += f"\n{i}. **{aspect['title']}**:\n{bullets}\n"
+
+    system_prompt = f"""あなたは{config['persona']}です。
+あなたの読者は{config['reader_level']}です。
 {source_post_instruction}
 {figures_instruction}
-【最重要指針：物理・数学のギャップを徹底的に埋め、難解な解説を解きほぐす】
+【最重要指針：{config['gap_fill_title']}】
 教科書や論文では、数式の飛躍（「式(A)より直ちに式(B)を得る」）だけでなく、**著者の文章・解説が極めて抽象的でわかりづらい**ことが多々あります。
-以下の2つの側面から、徹底的にかみ砕いて解き明かしてください：
-
-1. **数式変形の行間埋め（数理的厳密性）**:
-   - ゲージ固定、基底の選択、自然単位系の規約
-   - 表面項・境界項をどのような境界条件でゼロとして落としたか
-   - どの微小パラメータに関する何次の近似か（テイラー展開、摂動展開、鞍点近似、双極子近似など）
-   - 演算子の交換関係 [A, B]、テンソル縮約公式、ディラック行列のトレース公式、積分経路・留数計算などの非自明なステップを省略なしで KaTeX 展開
-   - ※「両辺を移項して2で割ると…」のような中学生レベルの四則演算の説明は省き、物理的・数学的な核心の跳躍に集中すること。
-
-2. **難解な概念・定性解説のかみ砕き（物理的直観と言語化）**:
-   - 著者が抽象的な専門用語でサラッと述べている定性的な主張について、「要するに物理的に何が起きているのか？」を直観的・幾何学的な描像で解きほぐす。
-   - なぜ著者はそのような物理的設定やアナロジーを引いているのか、その背後にある本質的な動機（対称性の要請、因果律、ユニタリティ、自由度の数え上げ等）を明快に言語化する。
-   - 読者が「なるほど、著者が言いたかったのはこういう描像だったのか！」と腑に落ちる解説を提供する。
-
+以下の側面から、徹底的にかみ砕いて解き明かしてください：
+{gap_aspects_text}
 {related_context}
 
 ---
@@ -457,12 +597,12 @@ def generate_physics_gap_post(
 1. **フロントマター（YAML Frontmatter）を記事先頭に出力してください**:
 ---
 {title_instruction}
-slug: "記事内容や解説する物理概念を的確に表す半角英数小文字・ハイフン区切りの英語スラッグ（3〜5単語。例: nakahara-tangent-bundle-structure-group, klein-gordon-hamiltonian-diagonalization, fibre-bundle-sections-gauge-field）"
+slug: "記事内容や解説する概念を的確に表す半角英数小文字・ハイフン区切りの英語スラッグ（3〜5単語。例: {config['slug_examples']}）"
 summary: "120〜180文字程度の魅力的な記事要約（どの式変形や難解な解説をどう解きほぐしたかを明確に）"
 tags:
-  - 物理学
-  - 数理物理
-  - （内容に応じたタグを2〜3個。例: 場の量子論, 量子力学, 解析力学, 統計力学, 相対論など。スラッシュはハイフンに）
+  - {config['default_tags'][0]}
+  - {config['default_tags'][1] if len(config['default_tags']) > 1 else ''}
+  - （内容に応じたタグを2〜3個。例: {config['tag_examples']}。スラッシュはハイフンに）
 ---
 
 2. **太字・強調ルールの遵守（最重要）**:
@@ -479,11 +619,11 @@ tags:
    - 見出しは「## （見出し名）」から始めてください。
    - 以下の構成で執筆してください：
      - ## 導入と問題の所在: 何の教科書/論文のどの部分（数式または難解な解説文）が問題なのか、どこが直観に反する・わかりづらいのかを提示。
-     - ## 背景にある物理的前提・設定: 座標系、ゲージ、基底、物理的描像の前提を整理。
+     - ## 背景にある前提・設定: 使われている記号・仮定・前提条件を整理。
      - ## 核心の導出 ＆ 概念のかみ砕き解説: （★最重要）
        - 数式変形がある場合: 核心の途中式を KaTeX で省略なしに展開し、変形の根拠を明記。
-       - 解説・文章がわかりづらい場合: 著者の主張を解体し、「物理的描像（幾何学的イメージや対称性）」に翻訳して平易かつ深くかみ砕く。
-     - ## で、なぜ著者はこのような説明・省略をしたのか？（物理的考察）: （★独自オピニオン）著者の意図や時代背景、数学的必然性や物理的直観を熱量高く語る。
+       - 解説・文章がわかりづらい場合: 著者の主張を解体し、直観的な描像に翻訳して平易かつ深くかみ砕く。
+     - ## {config['opinion_section_title']}: （★独自オピニオン）{config['opinion_description']}
      - ## まとめ ＆ 関連する問い: 総括と、さらなる発展的課題。
 
 【ユーザーからの疑問・着眼点メモ】:
@@ -492,7 +632,7 @@ tags:
 
     prompt_contents = contents + fig_parts + [system_prompt]
 
-    print(f"\n🧠 [Gemini] 物理行間埋め記事を執筆中 (モデル: {model_name})...")
+    print(f"\n🧠 [Gemini] 行間埋め記事を執筆中 (モデル: {model_name}, ジャンル: {genre})...")
     candidate_models = [
         model_name,
         "gemini-3.8-flash",
@@ -529,8 +669,10 @@ def format_and_save_post(
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
     source_label: Optional[str] = None,
     figures: Optional[List[Dict[str, Any]]] = None,
+    genre: str = "physics",
 ) -> str:
     """Astro 向けに最終フォーマットを整えてファイルに保存"""
+    config = get_genre_config(genre)
     frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", raw_markdown.strip(), re.DOTALL)
     parsed_meta = {}
     body = raw_markdown.strip()
@@ -543,14 +685,14 @@ def format_and_save_post(
             pass
 
     # タイトル
-    title = parsed_meta.get("title", "物理の行間を埋める導出ノート")
+    title = parsed_meta.get("title", config["default_title"])
     # 本文冒頭の重複 H1 を削除
     body = re.sub(r"^#\s+.*?\n+", "", body).strip()
 
-    summary = parsed_meta.get("summary", "物理学の教科書・論文における式変形の行間を補完・徹底解説。")
-    tags = parsed_meta.get("tags", ["物理学", "数理物理", "式変形"])
+    summary = parsed_meta.get("summary", config["default_summary"])
+    tags = parsed_meta.get("tags", config["default_tags"])
     if not isinstance(tags, list):
-        tags = ["物理学", "数理物理"]
+        tags = config["default_fallback_tags"]
 
     cleaned_tags = []
     for t in tags:
@@ -614,8 +756,8 @@ def format_and_save_post(
 
 ---
 
-### 📝 物理ノート作成メモ
-- 本記事は教科書・論文の行間（非自明な途中計算や物理的仮定）を補完するために Gemini マルチモーダル解析によって生成・整理された導出解説です。
+### 📝 ノート作成メモ
+- {config['meta_footer']}
 """
 
     frontmatter_dict = {
@@ -647,7 +789,7 @@ def format_and_save_post(
     slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", chosen_slug.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)  # 連続ハイフンを単一化
     if not slug or len(slug) < 3:
-        slug = "physics-derivation"
+        slug = config["default_slug"]
 
     filename = f"{slug}.md"
     file_path = os.path.join(output_dir, filename)
@@ -671,7 +813,7 @@ def format_and_save_post(
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="物理学の教科書や論文の行間埋め（式変形の導出）をブログ記事化するツール"
+        description="教科書や論文の行間埋め（式変形の導出）をブログ記事化するツール（物理・統計学・汎用対応）"
     )
     parser.add_argument("--image", type=str, help="スクショ画像ファイルパス (PNG/JPG)")
     parser.add_argument("--clip", action="store_true", help="クリップボードの画像を読み込む")
@@ -686,14 +828,21 @@ def main():
     parser.add_argument("--question", "-q", type=str, help="疑問点や導出したい式の指定（テキスト）")
     parser.add_argument("--title", type=str, help="記事タイトルの希望（未指定時は自動生成）")
     parser.add_argument("--slug", type=str, default=None, help="ファイル名のスラッグ（未指定時は記事内容から自動生成）")
+    parser.add_argument(
+        "--genre", "-g",
+        type=str,
+        default="physics",
+        help="ジャンル (physics/stats/general)。エイリアス: phys, 物理, statistics, 統計, ds, ml, math, 汎用"
+    )
     parser.add_argument("--model", type=str, default="gemini-3.8-flash", help="使用する Gemini モデル")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_YAGIBRARY_POSTS_DIR, help="保存先ディレクトリ")
     parser.add_argument("--dry-run", action="store_true", help="ファイル保存せずコンソールに出力")
 
     args = parser.parse_args()
+    genre_config = get_genre_config(args.genre)
 
     print("\n" + "=" * 65)
-    print(" ⚛️  Physics Gap Blogger（物理行間埋めブロガー）起動")
+    print(f" {genre_config['label']}起動")
     print("=" * 65)
 
     gemini_contents = []
@@ -800,7 +949,7 @@ def main():
     # 5. 関連記事のインデックス検索
     posts_index = load_existing_posts_index(args.output_dir)
     query_hint = (args.question or "") + " " + context_text[:500]
-    relevant_posts = find_relevant_past_posts(query_hint, posts_index, max_matches=3)
+    relevant_posts = find_relevant_past_posts(query_hint, posts_index, max_matches=3, genre=args.genre)
 
     # 元記事が指定されている場合は関連記事リストの最優先（先頭）に配置
     if source_post_info:
@@ -819,6 +968,7 @@ def main():
         source_post=source_post_info,
         figures=pdf_figures,
         model_name=args.model,
+        genre=args.genre,
     )
 
     # 7. 保存または出力
@@ -834,6 +984,7 @@ def main():
             relevant_posts=relevant_posts,
             source_label=source_label,
             figures=pdf_figures,
+            genre=args.genre,
         )
         print("\n" + "=" * 65)
         print(f" 🎉 ブログ記事の保存が完了しました！")
