@@ -22,11 +22,20 @@ from generators.paper_generator import (
 )
 
 
-def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None) -> List[str]:
+def run_targeted_pipeline(
+    arxiv_ids: List[str],
+    output_dir: Optional[str] = None,
+    genre: Optional[str] = "auto",
+    pages: Optional[str] = None,
+) -> List[str]:
     """特定の arXiv ID を指定してピンポイントでブログ記事を執筆・保存するモード"""
     print("\n" + "=" * 65)
     print(" 🎯 arXiv × TypeSafe Jev × Gemini 特定論文ブロガー 起動")
     print(f" 📑 指定論文: {', '.join(arxiv_ids)}")
+    if pages:
+        print(f" 📄 指定ページ範囲: {pages}")
+    if genre and genre != "auto":
+        print(f" 📚 指定ジャンル: {genre}")
     print("=" * 65)
 
     if output_dir is None:
@@ -67,7 +76,41 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
         if relevant_posts:
             print(f"  🔗 関連する過去記事を {len(relevant_posts)} 件検出: {[p['title'][:30] for p in relevant_posts]}")
 
-        paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+        # 指定ページがある場合は PDF から本文を直接抽出
+        if pages:
+            import httpx
+            try:
+                import fitz
+                pdf_url = paper.get("pdf_url", f"https://arxiv.org/pdf/{paper['arxiv_id']}.pdf")
+                print(f"  📥 PDF から指定ページ ({pages}) のテキストを抽出中 ({pdf_url})...")
+                resp = httpx.get(pdf_url, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True, timeout=60.0)
+                doc = fitz.open(stream=resp.content, filetype="pdf")
+
+                target_page_indices = []
+                for part in pages.split(","):
+                    part = part.strip()
+                    if "-" in part:
+                        start, end = part.split("-", 1)
+                        target_page_indices.extend(range(int(start), int(end) + 1))
+                    elif part.isdigit():
+                        target_page_indices.append(int(part))
+
+                extracted_pages = []
+                for pno in target_page_indices:
+                    if 1 <= pno <= len(doc):
+                        page_text = doc[pno - 1].get_text()
+                        extracted_pages.append(f"=== [Page {pno}] ===\n{page_text}")
+
+                pages_text = "\n\n".join(extracted_pages)
+                paper["full_text_content"] = {"pages_text": pages_text}
+                paper["focus_pages"] = pages
+                print(f"  ✓ 指定 {len(target_page_indices)} ページのテキスト抽出完了 ({len(pages_text)} 文字)")
+            except Exception as e:
+                print(f"  ⚠️ PDF指定ページ抽出エラー: {e}")
+                paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+        else:
+            paper["full_text_content"] = fetch_arxiv_paper_content(paper["arxiv_id"])
+
         paper["figures"] = fetch_arxiv_paper_figures(paper)
 
         raw_markdown, quality, history = generate_refined_blog_post(
@@ -75,6 +118,7 @@ def run_targeted_pipeline(arxiv_ids: List[str], output_dir: Optional[str] = None
             rank=batch_idx,
             max_revisions=2,
             relevant_posts=relevant_posts,
+            genre=genre,
         )
 
         time_offset = (len(ranked_papers) - batch_idx) * 60

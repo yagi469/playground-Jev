@@ -210,7 +210,12 @@ if __name__ == "__main__":
     elif args.arxiv_id.strip():
         # 特定論文指定モード
         target_ids = [aid.strip() for aid in args.arxiv_id.split(",") if aid.strip()]
-        run_targeted_pipeline(arxiv_ids=target_ids, output_dir=args.output_dir)
+        run_targeted_pipeline(
+            arxiv_ids=target_ids,
+            output_dir=args.output_dir,
+            genre=args.genre,
+            pages=args.pages.strip() or None,
+        )
     elif args.arxiv_daily:
         # arXiv 自動スクリーニングモード
         run_daily_pipeline(

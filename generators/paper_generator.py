@@ -10,7 +10,33 @@ from typing import List, Dict, Any, Optional, Tuple
 from typesafe_sdk import Score, Noul
 from config import init_gemini_client, get_typesafe_client
 from core.figure_extractor import build_figures_prompt_components
+from generators.prompts import get_genre_blog_config
 from score_post import verify_post_with_jev
+
+
+def resolve_paper_genre(paper: Dict[str, Any], explicit_genre: Optional[str] = "auto") -> str:
+    """論文のカテゴリやタイトルから適切なジャンルを決定"""
+    if explicit_genre and explicit_genre != "auto":
+        return explicit_genre
+
+    categories = [c.lower() for c in paper.get("categories", [])]
+    title_lower = paper.get("title", "").lower()
+    summary_lower = paper.get("summary", "").lower()
+
+    # 1. 統計学・計量経済学・因果推論
+    if any(c.startswith("econ.") or c.startswith("stat.") or c.startswith("q-fin.") for c in categories):
+        return "stats"
+    if any(k in title_lower or k in summary_lower for k in [
+        "econometrics", "causal inference", "regression discontinuity", "treatment effect", "potential outcomes", "instrumental variable"
+    ]):
+        return "stats"
+
+    # 2. コンピュータ科学・ソフトウェア
+    if any(c.startswith("cs.") for c in categories):
+        return "tech"
+
+    # 3. 物理学（デフォルト）
+    return "physics"
 
 
 def load_user_interests() -> Dict[str, Any]:
@@ -122,20 +148,31 @@ def write_blog_post_with_gemini(
     paper: Dict[str, Any],
     rank: int = 1,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    genre: Optional[str] = "auto",
 ) -> str:
     """選定されたベスト論文をもとに、ブログ記事を自動執筆"""
     client = init_gemini_client()
 
     m = paper["jev_metrics"]
+    resolved_genre = resolve_paper_genre(paper, genre)
+    genre_cfg = get_genre_blog_config(resolved_genre, {"title": paper["title"], "subfield": m.get("subfield", "")})
+
     print(f"\n🧠 [Gemini] 総合第{rank}位の論文 {paper['arxiv_id']} のブログ記事を執筆中...")
     print(f"   タイトル: {paper['title']}")
-    print(f"   分野: {m['subfield']} (総合スコア: {m['total_score']})")
+    print(f"   ジャンル: {resolved_genre} (総合スコア: {m['total_score']})")
 
-    user_profile = load_user_interests()
     user_perspective = ""
-    if user_profile:
-        themes = ", ".join(user_profile.get("core_themes", []))
-        user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
+    if resolved_genre == "physics":
+        user_profile = load_user_interests()
+        if user_profile:
+            themes = ", ".join(user_profile.get("core_themes", []))
+            user_perspective = f"\n【筆者の専門的バックボーン・着眼点（Google Driveの蔵書・関心より）】\n- 筆者は場の量子論、超対称共形場理論（SCFT）、カイラル代数、Dブレーン幾何、トポロジカル場論（TQFT）、AdS/CFT対応などの数理的側面に強い思い入れがあります。\n- 関心テーマ: {themes}\n- 「で、私（筆者）はどう考えるか？」のセクションでは、これらの数理物理観点も交えつつ、独自の一歩踏み込んだ深いオピニオンを熱量高く語ってください。\n"
+    elif resolved_genre in ["stats", "econometrics"]:
+        user_perspective = (
+            "\n【筆者の専門的バックボーン・着眼点】\n"
+            "- 筆者はデータサイエンス、計量経済学、統計的因果推論、ノンパラメトリック推定、機械学習の数理に強い関心があります。\n"
+            "- 「で、私（筆者）はどう考えるか？」では、実証分析への影響、他手法との比較、実務での適用限界や仮定の妥当性について、骨太なオピニオンを展開してください。\n"
+        )
 
     related_context = ""
     if relevant_posts:
@@ -147,7 +184,13 @@ def write_blog_post_with_gemini(
     full_text_section = ""
     fc = paper.get("full_text_content")
     if fc:
-        full_text_section = f"""
+        if fc.get("pages_text"):
+            full_text_section = f"""
+【論文の指定分析対象ページ ({paper.get('focus_pages', '')}) からのテキスト・数式抜粋】
+{fc.get('pages_text')[:15000]}
+"""
+        else:
+            full_text_section = f"""
 【論文本文（HTML）からの重要抜粋】
 - 論文のセクション構成: {fc.get('section_names', 'N/A')}
 - 序論・動機（Introduction）:
@@ -160,9 +203,9 @@ def write_blog_post_with_gemini(
 
     figures_instruction, fig_parts = build_figures_prompt_components(paper.get("figures"))
 
-    prompt = f"""あなたは超弦理論、超対称共形場理論（SCFT）、場の量子論の厳密な数理構造（代数・幾何）、AdS/CFT対応の最前線を探究する、一流の理論物理学者兼サイエンスブロガーです。
+    prompt = f"""{genre_cfg["persona"]}
 読者が「で、あなたの意見は？」と突っ込みたくなるような退屈なAIまとめ記事ではなく、
-安易で子供騙しな日常のたとえ話（コーヒーの冷却など）に逃げず、理論物理の真の美しさ・対称性の幾何・代数的機構を生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
+安易な表面論に逃げず、本論文が提起する核心アイデア・数理的機構・実務や理論へのインパクトを生き生きと語り尽くす、知的好奇心を刺激する熱いブログ記事を執筆してください。
 {user_perspective}{related_context}{figures_instruction}
 【取り上げる論文情報】
 - arXiv ID: {paper['arxiv_id']}
@@ -174,42 +217,32 @@ def write_blog_post_with_gemini(
 - アブストラクト (英文):
 {paper['summary']}
 {full_text_section}
-【Jev System One による分析評価】
-- 数理物理核心度: {m.get('is_math_physics_core', m.get('is_quantum_relevant', 0.0)) * 100:.1f}%
-- ユーザー関心合致スコア: {m.get('user_interest_match', 0.0):.2f} / 3.0
-- 理論的深さスコア: {m['theoretical_depth']:.2f} / 3.0
-- ブログ知的好奇心スコア: {m['blog_appeal']:.2f} / 3.0
-- 専門領域: {m['subfield']}
+【分析評価】
+- 専門領域: {m.get('subfield', resolved_genre)}
 
 ---
 【記事の構成とフォーマット規則】
 1. **フロントマター（YAML Frontmatter）を記事先頭に必ず出力してください**:
 ---
-title: "思わずクリックしたくなる、知的好奇心と物理的本質を突いた日本語タイトル"
+title: "思わずクリックしたくなる、知的好奇心と学術的本質を突いた日本語タイトル"
 summary: "120〜180文字程度の魅力的な記事要約"
 tags:
-  - 物理学
+  - {genre_cfg['default_tags'][0]}
   - （論文内容に即したタグを3〜5個。スラッシュは使わずハイフンを使用）
 ---
 
 2. **太字・強調ルールの遵守（最重要）**:
-   - テキストを太字・強調する場合は、必ず HTMLの <strong> タグ（例: <strong>太字テキスト</strong>）を使用してください。
+   - テキストを太字・強調する場合は、必ず HTMLの <strong> タグ（例: <strong>太字テキスト</strong>）を使用してください。Markdownの ** は禁止です。
 
 3. **本文の見出し構成**:
    - 本文の開始部分に「# タイトル」を置かないでください。
-   - 本文の見出しは「## （見出し名）」から始めてください。
-   - 以下の構成で執筆してください：
-     - ## 導入（1行サマリー ＆ つかみ）: 対象論文へのリンク（[{paper['arxiv_id']}]({paper['url']})）を含め、核心アイデアの直観的イメージを提示。
-     - ## 背景にある物理・数学の壁: 従来の理論の何が未解決だったのかを解説。
-     - ## この論文の核心アイデアと数理的機構: 著者がどのような数理構造で乗り越えたかを解説。
-     - ## で、私（筆者）はどう考えるか？: （★最重要：独自のスタンス・考察・ツッコミ）研究者としての骨太なオピニオンを展開。
-     - ## まとめ ＆ 論文リンク: 記事の総括と、arXivリンク（[{paper['arxiv_id']}]({paper['url']})）、PDFリンク（[PDF]({paper['pdf_url']})）をリスト形式で設置。
+{genre_cfg["sections"]}
 
-4. **数式ブロックの改行ルール**:
-   - 独立ブロック数式（$$ ... $$）は、必ず前後に改行を入れて独立行で出力。
-
-5. **前提知識の導入と途中計算・行間の明示**:
-   - 記号や既知理論との違いを平易に定義し、途中計算ステップを明記。
+4. **執筆ルール・数式**:
+{genre_cfg["guidance"]}
+- 数式ブロック（$$ ... $$）は、必ず前後に改行を入れて独立行で出力。
+- 記号の定義や前提知識を丁寧に導入し、途中計算の行間を明示。
+- 記事末尾には必ず対象論文へのリンク（[{paper['arxiv_id']}]({paper['url']})）およびPDFリンク（[PDF]({paper['pdf_url']})）を掲載。
 
 Markdown形式で出力してください。
 """
@@ -247,11 +280,14 @@ def rewrite_blog_post_with_gemini(
     revision_round: int,
     rank: int = 1,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    genre: Optional[str] = "auto",
 ) -> str:
     """Jev による診断結果・ボトルネック指摘に基づき、Gemini にブログ記事をリライトさせる"""
     client = init_gemini_client()
+    resolved_genre = resolve_paper_genre(paper, genre)
+    genre_cfg = get_genre_blog_config(resolved_genre, {"title": paper["title"]})
 
-    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバックを反映して記事を再推敲中...")
+    print(f"\n🔄 [Gemini リライト Round {revision_round}] Jevの改善フィードバックを反映して記事を再推敲中 (ジャンル: {resolved_genre})...")
 
     diagnosis = feedback_metrics.get("diagnosis", "")
     focus_instructions = []
@@ -264,19 +300,19 @@ def rewrite_blog_post_with_gemini(
 
     if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
         focus_instructions.append(
-            "- 【最重要：数理的機構の具体化】具体的な数学的・物理的機構（ゲージ群、対称性、アノマリー、計算機構など）が"
+            "- 【最重要：数理的機構の具体化】具体的な数学的・理論的機構（識別条件、推定量、仮定の妥当性など）が"
             "論理的にどう機能しているのかを明快に解説してください。"
         )
 
     if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
         focus_instructions.append(
             "- 【最重要：オピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションで、"
-            "研究者としての明確なスタンスと鋭い批評を展開してください。"
+            "明確なスタンスと鋭い批評を展開してください。"
         )
 
     if diagnosis == "avoid_shallow_metaphors":
         focus_instructions.append(
-            "- 【日常比喩の排除】子供騙しの日常のたとえ話を完全に排除し、理論物理そのものの数理美に徹してください。"
+            "- 【比喩の排除・主題への集中】安易なたとえ話や無関係な分野からの無理なこじつけを排除し、論文本来の学術的本質に徹してください。"
         )
 
     if not focus_instructions:
@@ -289,7 +325,13 @@ def rewrite_blog_post_with_gemini(
     full_text_section = ""
     fc = paper.get("full_text_content")
     if fc:
-        full_text_section = f"""
+        if fc.get("pages_text"):
+            full_text_section = f"""
+【論文の指定分析対象ページ ({paper.get('focus_pages', '')}) からのテキスト・数式抜粋】
+{fc.get('pages_text')[:15000]}
+"""
+        else:
+            full_text_section = f"""
 【論文本文（HTML）からの重要抜粋】
 - 論文のセクション構成: {fc.get('section_names', 'N/A')}
 - 序論・動機（Introduction）: {fc.get('intro', '')[:2500]}
@@ -297,7 +339,7 @@ def rewrite_blog_post_with_gemini(
 - 結論・展望（Conclusion / Outlook）: {fc.get('conclusion', '')[:1500]}
 """
 
-    rewrite_prompt = f"""あなたは一流の理論物理学者兼サイエンスブロガーです。
+    rewrite_prompt = f"""{genre_cfg['persona']}
 先ほど執筆したブログ記事ドラフトに対し、Jev System One 診断システムから以下の改善要求が届きました。
 
 【Jev による前稿（第{revision_round - 1}稿）の診断結果】
@@ -367,10 +409,12 @@ def generate_refined_blog_post(
     rank: int = 1,
     max_revisions: int = 2,
     relevant_posts: Optional[List[Dict[str, Any]]] = None,
+    genre: Optional[str] = "auto",
 ) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
     """Evaluator-Optimizer パターンによる自律改善パイプライン"""
-    current_post = write_blog_post_with_gemini(paper, rank=rank, relevant_posts=relevant_posts)
-    metrics = verify_post_with_jev(current_post, round_num=1, domain="physics")
+    resolved_genre = resolve_paper_genre(paper, genre)
+    current_post = write_blog_post_with_gemini(paper, rank=rank, relevant_posts=relevant_posts, genre=resolved_genre)
+    metrics = verify_post_with_jev(current_post, round_num=1, domain=resolved_genre)
     history = [metrics]
 
     round_count = 1
@@ -385,9 +429,10 @@ def generate_refined_blog_post(
             revision_round=round_count,
             rank=rank,
             relevant_posts=relevant_posts,
+            genre=resolved_genre,
         )
 
-        metrics = verify_post_with_jev(current_post, round_num=round_count, domain="physics")
+        metrics = verify_post_with_jev(current_post, round_num=round_count, domain=resolved_genre)
         history.append(metrics)
 
         if metrics.get("passed", False):
