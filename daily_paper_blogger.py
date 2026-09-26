@@ -146,8 +146,8 @@ if __name__ == "__main__":
         "--genre", "-g",
         type=str,
         default="auto",
-        choices=["auto", "business", "tech", "physics", "classics", "history", "general"],
-        help="執筆ジャンル (デフォルト: auto)"
+        choices=["auto", "business", "tech", "physics", "classics", "history", "stats", "econometrics", "general"],
+        help="執筆ジャンル (デフォルト: auto, 選択肢: auto, business, tech, physics, classics, history, stats, econometrics, general)"
     )
     parser.add_argument(
         "--offset",
