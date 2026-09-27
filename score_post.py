@@ -525,6 +525,10 @@ def classify_genre_with_jev(
                 "ブログ記事として執筆・解説する上で最も適切なジャンルを1つ判定してください。"
             ),
             criteria={
+                "stats": (
+                    "計量経済学、統計学、統計的因果推論、ノンパラメトリック回帰、"
+                    "機械学習、データサイエンス、実証分析などの統計・計量科学に関する学術論文や専門書"
+                ),
                 "business": (
                     "経営、マネジメント、組織論、リーダーシップ、生産管理・工程設計、"
                     "スタートアップ、事業戦略、チーム運営、働き方などのビジネス・組織実務に関する書籍や文書"
@@ -559,7 +563,9 @@ def classify_genre_with_jev(
         if verbose:
             print(f"  ⚠️ Jev ジャンル判定フォールバック: {e}")
         lower_t = (title + " " + summary_or_text).lower()
-        if any(w in lower_t for w in ["オデュッセイア", "イリアス", "ホメロス", "古典", "ギリシャ", "ローマ", "哲学", "叙事詩", "神話", "史記", "三国志", "classics", "history"]):
+        if any(w in lower_t for w in ["econometrics", "causal", "regression", "stat", "計量経済学", "因果推論", "統計", "rdd"]):
+            return "stats"
+        elif any(w in lower_t for w in ["オデュッセイア", "イリアス", "ホメロス", "古典", "ギリシャ", "ローマ", "哲学", "叙事詩", "神話", "史記", "三国志", "classics", "history"]):
             return "classics"
         elif any(w in lower_t for w in ["management", "マネジメント", "組織", "business", "リーダー"]):
             return "business"

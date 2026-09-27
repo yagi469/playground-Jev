@@ -344,6 +344,7 @@ def load_and_process_local_file(
     chapter_hint: Optional[str] = None,
     genre: Optional[str] = "auto",
     offset: Optional[int] = None,
+    no_figures: bool = False,
 ) -> Dict[str, Any]:
     """
     ローカルの PDF または Markdown / Text ファイルを読み込み、Gemini 用のコンテンツオブジェクトと
@@ -441,12 +442,16 @@ def load_and_process_local_file(
                 except Exception as e:
                     print(f"   ⚠️ PDF自動スリム化失敗（フォールバック継続）: {e}")
 
-        pdf_figures = extract_pdf_figures(
-            resolved_path,
-            pages_str=effective_pages_str,
-            max_figures=12,
-            skip_front_matter=True,
-        )
+        if no_figures:
+            pdf_figures = []
+        else:
+            pdf_figures = extract_pdf_figures(
+                resolved_path,
+                pages_str=effective_pages_str,
+                max_figures=12,
+                skip_front_matter=True,
+                allow_full_page=False,
+            )
         doc_info["figures"] = pdf_figures
         if pdf_figures:
             print(f"   🖼️ PDFから図表（Figure）を {len(pdf_figures)} 点抽出完了")

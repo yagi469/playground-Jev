@@ -5,10 +5,13 @@ PDF / arXiv 図表（Figure）の抽出、Base64エンコード、プロンプ�
 """
 
 import os
+import io
 import re
+import json
 import base64
 from typing import List, Dict, Any, Optional, Tuple
 import httpx
+from PIL import Image
 
 try:
     try:
@@ -19,6 +22,134 @@ except ImportError:
     fitz = None
 
 
+def detect_and_crop_figures_with_gemini(
+    page: Any,
+    page_num: int,
+    start_fig_idx: int,
+    min_width: int = 120,
+    min_height: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    スキャンされた書籍ページ画像から、Gemini Vision を用いてグラフ・図表（Figure）の領域座標を検出し、
+    Pillow でその領域のみをピンポイントで切り抜いて（トリミングして）Base64画像として返す。
+    """
+    from config import init_gemini_client
+    from google.genai import types
+
+    try:
+        client = init_gemini_client()
+    except Exception as e:
+        print(f"   ⚠️ AI図表切り抜きクライアント取得失敗: {e}")
+        return []
+
+    # 150 DPI で鮮明な一時 JPEG を生成
+    pix = page.get_pixmap(dpi=150)
+    page_bytes = pix.tobytes("jpeg")
+
+    prompt = """この書籍スキャンページ画像から、「グラフ」「図表（Figure）」「概念図」の領域のみを検出してください。
+本文テキストの段落や、通常の独立数式ブロックのみの部分は絶対に除外してください。
+検出された各図表について、以下のJSON形式で正規化座標（0〜1000の整数 [ymin, xmin, ymax, xmax]）と説明を出力してください。図表がない場合は空リスト [] を返してください。
+```json
+[
+  {
+    "box_2d": [ymin, xmin, ymax, xmax],
+    "label": "図の簡単な説明や図番号（例: 図3.1 NW推定量とLL推定量の比較）"
+  }
+]
+```"""
+
+    candidate_models = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"]
+    response_text = None
+    for model_name in candidate_models:
+        try:
+            res = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_bytes(data=page_bytes, mime_type="image/jpeg"),
+                    prompt,
+                ],
+            )
+            response_text = res.text
+            break
+        except Exception:
+            continue
+
+    if not response_text:
+        return []
+
+    json_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", response_text, re.DOTALL)
+    raw_json = json_match.group(1) if json_match else response_text.strip()
+    try:
+        items = json.loads(raw_json)
+    except Exception:
+        return []
+
+    if not isinstance(items, list) or len(items) == 0:
+        return []
+
+    pil_img = Image.open(io.BytesIO(page_bytes))
+    w, h = pil_img.size
+
+    cropped_figures = []
+    fig_idx = start_fig_idx
+
+    for item in items:
+        box = item.get("box_2d", [])
+        label = item.get("label", f"図 (p.{page_num})")
+        if not isinstance(box, list) or len(box) != 4:
+            continue
+
+        ymin, xmin, ymax, xmax = box
+        if not (0 <= ymin < ymax <= 1000 and 0 <= xmin < xmax <= 1000):
+            continue
+
+        # 3%の余白パディングを設けて綺麗にトリミング
+        pad_y = int((ymax - ymin) * h / 1000 * 0.03)
+        pad_x = int((xmax - xmin) * w / 1000 * 0.03)
+
+        left = max(0, int(xmin * w / 1000) - pad_x)
+        top = max(0, int(ymin * h / 1000) - pad_y)
+        right = min(w, int(xmax * w / 1000) + pad_x)
+        bottom = min(h, int(ymax * h / 1000) + pad_y)
+
+        crop_w = right - left
+        crop_h = bottom - top
+
+        if crop_w < min_width or crop_h < min_height:
+            continue
+
+        # ページ全体の90%以上を占めている場合は、ページ全体の誤検知とみなしてスキップ
+        if crop_w / w > 0.9 and crop_h / h > 0.9:
+            continue
+
+        cropped_img = pil_img.crop((left, top, right, bottom))
+        out_io = io.BytesIO()
+        cropped_img.save(out_io, format="PNG")
+        crop_bytes = out_io.getvalue()
+
+        b64_str = base64.b64encode(crop_bytes).decode("utf-8")
+        data_url = f"data:image/png;base64,{b64_str}"
+        placeholder = f"{{{{PDF_FIGURE_{fig_idx}}}}}"
+
+        print(f"   ✂️ [AI図表切り抜き] p.{page_num} から図表を検出・切り抜き: {label} ({crop_w}x{crop_h})")
+
+        cropped_figures.append({
+            "placeholder": placeholder,
+            "data_url": data_url,
+            "bytes": crop_bytes,
+            "mime_type": "image/png",
+            "ext": "png",
+            "width": crop_w,
+            "height": crop_h,
+            "page": page_num,
+            "label": label,
+            "is_full_page": False,
+        })
+        fig_idx += 1
+
+    return cropped_figures
+
+
 def extract_pdf_figures(
     pdf_path: str,
     pages_str: Optional[str] = None,
@@ -27,11 +158,13 @@ def extract_pdf_figures(
     min_width: int = 120,
     min_height: int = 60,
     skip_front_matter: bool = True,
+    allow_full_page: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     PDFの指定ページから図（画像オブジェクト・グラフ・回路図・ダイアグラム等）を抽出し、
     Base64データURLとメタデータ（プレースホルダー、ページ番号、サイズ等）を生成して返す。
-    書籍等のスキャンPDF（全ページが画像）の場合、表紙や目次など本文外のページを自動除外します。
+    書籍等のスキャンPDF（全ページが画像）の場合、ページ全体の丸ごと挿入を防ぎ、
+    AIによりグラフ・図表領域のみをピンポイントで切り抜いて抽出します。
     """
     if fitz is None:
         print("  ⚠️ PyMuPDF (fitz) が利用できないため、PDF図表抽出をスキップします。'pip install pymupdf' を推奨します。")
@@ -81,20 +214,39 @@ def extract_pdf_figures(
         img_list = page.get_images()
 
         is_single_full_page = False
-        if len(img_list) == 1:
+        if len(img_list) >= 1:
             try:
-                base_img_probe = doc.extract_image(img_list[0][0])
-                img_w = base_img_probe.get("width", 0)
-                img_h = base_img_probe.get("height", 0)
-                if page_rect.width > 0 and page_rect.height > 0:
-                    w_ratio = img_w / page_rect.width
-                    h_ratio = img_h / page_rect.height
-                    if w_ratio > 0.8 and h_ratio > 0.8:
-                        is_single_full_page = True
+                for img_probe in img_list:
+                    base_img_probe = doc.extract_image(img_probe[0])
+                    img_w = base_img_probe.get("width", 0)
+                    img_h = base_img_probe.get("height", 0)
+                    if page_rect.width > 0 and page_rect.height > 0:
+                        w_ratio = img_w / page_rect.width
+                        h_ratio = img_h / page_rect.height
+                        if w_ratio > 0.8 and h_ratio > 0.8:
+                            is_single_full_page = True
+                            break
             except Exception:
                 pass
 
-        if is_single_full_page and skip_front_matter and pno < 15:
+        if is_single_full_page:
+            if not allow_full_page:
+                # スキャンページから図表部分のみをAIで検知・ピンポイント切り抜き
+                try:
+                    cropped_figures = detect_and_crop_figures_with_gemini(
+                        page=page,
+                        page_num=pno + 1,
+                        start_fig_idx=fig_idx,
+                        min_width=min_width,
+                        min_height=min_height,
+                    )
+                    for cf in cropped_figures:
+                        if len(figures) >= max_figures:
+                            break
+                        figures.append(cf)
+                        fig_idx += 1
+                except Exception as e:
+                    print(f"   ⚠️ AI図表切り抜き失敗 (p.{pno + 1}): {e}")
             continue
 
         for img in img_list:
@@ -196,9 +348,11 @@ def build_figures_prompt_components(
     fig_parts = []
 
     for f in figures:
+        desc = f" ({f['label']})" if f.get("label") else ""
+        caption_guide = f"'{f['label']}' または適切なキャプション" if f.get("label") else "図の適切なキャプション"
         fig_lines.append(
-            f"- `{f['placeholder']}`: (文献 p.{f['page']} より抽出された図表、サイズ {f['width']}x{f['height']}) "
-            f"-> 本文の該当する概念・モデル・実験グラフ・アーキテクチャ図・設計図を解説する直後に、独立した行で `![図の適切なキャプション]({f['placeholder']})` として配置してください。"
+            f"- `{f['placeholder']}`: (文献 p.{f['page']} より抽出された図表{desc}、サイズ {f['width']}x{f['height']}) "
+            f"-> 本文の該当する概念・モデル・実験グラフ・アーキテクチャ図・設計図を解説する直後に、独立した行で `![{caption_guide}]({f['placeholder']})` として配置してください。"
         )
         if send_image_parts:
             fig_parts.append(

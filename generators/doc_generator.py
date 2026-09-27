@@ -189,6 +189,22 @@ def rewrite_doc_blog_post_with_gemini(
                 "- 【最重要：現代へのアナロジーとオピニオンの徹底強化】「で、私（筆者）はどう考えるか？」セクションで、"
                 "現代のビジネス、キャリア、意思決定、人間心理に引きつけた骨太なオピニオンを熱量高く語ってください。"
             )
+    elif genre in ["stats", "statistics", "econometrics", "econ", "causal", "統計", "計量経済学"]:
+        if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
+            focus_instructions.append(
+                "- 【最重要：前提知識と途中計算（行間）の徹底解説】読者が置いてけぼりにならないよう、"
+                "統計的仮定や記号の定義、識別・推定の数理的展開ステップを明快かつ丁寧に解説してください。"
+            )
+        if feedback_metrics.get("math_depth", 0.0) < 2.0 or diagnosis == "need_math_details":
+            focus_instructions.append(
+                "- 【最重要：識別理論・推測数理の具体化】表面的なツール・ライブラリの紹介にとどまらず、"
+                "潜在的結果モデル、直交条件、オーダー記号（$o_p, O_p$）、分散・信頼区間の導出ロジックを具体的に掘り下げてください。"
+            )
+        if feedback_metrics.get("stance", 0.0) < 2.0 or feedback_metrics.get("lack_of_opinion_risk", 0.0) >= 0.35 or diagnosis == "need_sharp_opinion":
+            focus_instructions.append(
+                "- 【最重要：実証・理論の独自オピニオンの強化】「で、私（筆者）はどう考えるか？」セクションで、"
+                "実証分析の実務（境界付近のデータ密度、感度分析、他手法との使い分け、実務上の罠）に引きつけた骨太なオピニオンを展開してください。"
+            )
     else:
         if feedback_metrics.get("clarity", 0.0) < 2.0 or feedback_metrics.get("rushed_math_risk", 0.0) >= 0.35 or diagnosis == "need_pedagogical_steps":
             focus_instructions.append(
@@ -294,11 +310,12 @@ def generate_refined_doc_blog_post(
     """Gemini 執筆 ➡️ Jev 診断 ➡️ 必要に応じ Gemini リライトの自律推敲ループ"""
     genre = doc_info.get("genre", "general")
     domain_for_jev = (
-        "business" if genre in ["business", "management"]
+        "stats" if genre in ["stats", "statistics", "econometrics", "econ", "causal", "統計", "計量経済学"]
+        else ("business" if genre in ["business", "management"]
         else ("tech" if genre in ["tech", "engineering"]
         else ("physics" if genre in ["physics", "math"]
         else ("classics" if genre in ["classics", "history", "humanities", "philosophy"]
-        else "general")))
+        else "general"))))
     )
 
     current_draft = write_blog_post_from_doc_with_gemini(doc_info, relevant_posts=relevant_posts)

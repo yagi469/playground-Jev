@@ -180,6 +180,12 @@ if __name__ == "__main__":
         help="保存する記事ファイル名を明示的に指定（例: my-custom-article.md）"
     )
     parser.add_argument(
+        "--no-figures",
+        action="store_true",
+        default=False,
+        help="図表（Figure）の抽出・埋め込みを完全に無効化する"
+    )
+    parser.add_argument(
         "positional_args",
         nargs="*",
         help="後方互換用: [max_papers] [top_n]"
@@ -206,6 +212,7 @@ if __name__ == "__main__":
             offset=args.offset,
             output_dir=args.output_dir,
             custom_filename=args.filename,
+            no_figures=args.no_figures,
         )
     elif args.arxiv_id.strip():
         # 特定論文指定モード

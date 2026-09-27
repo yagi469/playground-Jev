@@ -27,6 +27,7 @@ def run_file_pipeline(
     output_dir: Optional[str] = None,
     custom_filename: Optional[str] = None,
     extra_tags: Optional[List[str]] = None,
+    no_figures: bool = False,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
     print("\n" + "=" * 65)
@@ -44,6 +45,8 @@ def run_file_pipeline(
         print(f" 🏷️ 指定保存ファイル名: {custom_filename}")
     if extra_tags:
         print(f" 🏷️ 固定付与タグ: {extra_tags}")
+    if no_figures:
+        print(f" 🚫 図表抽出: 無効（テキスト・数式のみで執筆）")
     print("=" * 65)
 
     if output_dir is None:
@@ -63,6 +66,7 @@ def run_file_pipeline(
         chapter_hint=chapter,
         genre=genre,
         offset=offset,
+        no_figures=no_figures,
     )
 
     # 過去記事インデックスから関連する記事を自動検索
