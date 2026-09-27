@@ -11,7 +11,10 @@ import json
 import base64
 from typing import List, Dict, Any, Optional, Tuple
 import httpx
-from PIL import Image
+try:
+    from PIL import Image  # type: ignore
+except ImportError:
+    Image = None
 
 try:
     try:
@@ -33,6 +36,10 @@ def detect_and_crop_figures_with_gemini(
     スキャンされた書籍ページ画像から、Gemini Vision を用いてグラフ・図表（Figure）の領域座標を検出し、
     Pillow でその領域のみをピンポイントで切り抜いて（トリミングして）Base64画像として返す。
     """
+    if Image is None:
+        print("   ⚠️ Pillow (PIL) が利用できないため、図表自動切り抜きをスキップします。'pip install pillow' を推奨します。")
+        return []
+
     from config import init_gemini_client
     from google.genai import types
 
