@@ -102,7 +102,30 @@ def run_file_pipeline(
         extra_tags=extra_tags,
     )
 
-    # 4. ファイル名生成 & 保存（日付プレフィックスは付与せず、意味のある英字スラッグを使用）
+    # 4. ファイル名生成 & 保存
+    # もし custom_filename が明示されていない場合、キュー登録書籍であればキューの slug と章番号から命名を統一
+    computed_custom_filename = custom_filename
+    if not computed_custom_filename:
+        try:
+            from core.book_queue import find_chapter_in_queue, DEFAULT_BOOK_QUEUE_PATH
+            actual_qp = queue_path or os.getenv("BOOK_QUEUE_PATH") or DEFAULT_BOOK_QUEUE_PATH
+            found = find_chapter_in_queue(file_path=file_path, pages=pages, chapter=chapter, queue_path=actual_qp)
+            if found:
+                _, q_book, q_ch = found
+                q_slug = q_book.get("slug")
+                q_ch_num = q_ch.get("chapter")
+                if q_slug and q_ch_num is not None:
+                    ch_str = str(q_ch_num).lower()
+                    if ch_str in ("0", "intro", "preface", "prologue"):
+                        suffix = "intro" if ch_str in ("0", "intro") else ch_str
+                        computed_custom_filename = f"{q_slug}-{suffix}.md"
+                    elif ch_str.isdigit():
+                        computed_custom_filename = f"{q_slug}-ch{ch_str}.md"
+                    else:
+                        computed_custom_filename = f"{q_slug}-{ch_str}.md"
+        except Exception:
+            pass
+
     base_name = os.path.splitext(doc_info["file_name"])[0]
     raw_slug = doc_info.get("slug") or ""
     base_slug = raw_slug or base_name or (f"{doc_info.get('genre', 'doc')}-note")
@@ -112,7 +135,7 @@ def run_file_pipeline(
         target_dir=target_dir,
         pages=pages,
         chapter=chapter,
-        custom_filename=custom_filename,
+        custom_filename=computed_custom_filename,
     )
 
     with open(out_file_path, "w", encoding="utf-8") as f:
