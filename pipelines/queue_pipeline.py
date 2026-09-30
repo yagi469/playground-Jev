@@ -91,6 +91,7 @@ def run_queue_pipeline(
         custom_filename=custom_filename,
         output_dir=output_dir,
         extra_tags=book.get("tags"),
+        auto_update_queue=False,
     )
 
     if out_files:

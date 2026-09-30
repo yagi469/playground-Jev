@@ -28,6 +28,8 @@ def run_file_pipeline(
     custom_filename: Optional[str] = None,
     extra_tags: Optional[List[str]] = None,
     no_figures: bool = False,
+    auto_update_queue: bool = True,
+    queue_path: Optional[str] = None,
 ) -> List[str]:
     """ローカルファイル（PDF/Markdown）から自律的に解説記事を執筆・保存するパイプライン"""
     print("\n" + "=" * 65)
@@ -120,4 +122,20 @@ def run_file_pipeline(
     print(f" 🎉 ドキュメント解説記事の生成・保存が完了しました！")
     print(f"    保存先: {out_file_path}")
     print("=" * 65)
+
+    # 書籍キュー自動同期（指定ファイル・章がキューに存在する場合に published に更新）
+    if auto_update_queue:
+        try:
+            from core.book_queue import sync_queue_on_file_published, DEFAULT_BOOK_QUEUE_PATH
+            actual_queue_path = queue_path or os.getenv("BOOK_QUEUE_PATH") or DEFAULT_BOOK_QUEUE_PATH
+            sync_queue_on_file_published(
+                file_path=file_path,
+                created_post_file=out_file_path,
+                pages=pages,
+                chapter=chapter,
+                queue_path=actual_queue_path,
+            )
+        except Exception as e:
+            print(f" ⚠️ [Book Queue Sync] キュー自動同期警告: {e}")
+
     return [out_file_path]

@@ -27,6 +27,7 @@ from core.book_queue import (
     load_book_queue,
     save_book_queue,
     get_next_queue_task,
+    sync_queue_on_file_published,
 )
 from core.post_formatter import (
     load_existing_posts_index,
@@ -74,6 +75,7 @@ __all__ = [
     "load_book_queue",
     "save_book_queue",
     "get_next_queue_task",
+    "sync_queue_on_file_published",
     "load_existing_posts_index",
     "find_relevant_past_posts",
     "format_post_for_yagibrary",
@@ -213,6 +215,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             custom_filename=args.filename,
             no_figures=args.no_figures,
+            queue_path=args.queue_path,
         )
     elif args.arxiv_id.strip():
         # 特定論文指定モード
