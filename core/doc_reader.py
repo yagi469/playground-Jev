@@ -239,7 +239,21 @@ def resolve_chapter_pages_from_toc(
     指定された章・テーマのページ範囲を自動特定し、
     書籍の印刷ノンブルとPDF物理ページ番号のオフセットを補正した物理ページ範囲を返す。
     """
-    if not chapter_hint or total_pages <= 40:
+    if not chapter_hint:
+        return None
+
+    # 0. まず book_queue.json に登録されている章であれば即座に特定（超高速・完全一致）
+    try:
+        from core.book_queue import get_chapter_pages_from_queue
+        queue_result = get_chapter_pages_from_queue(pdf_path, chapter_hint)
+        if queue_result:
+            pages_val, title_val = queue_result
+            print(f"   🎯 [Book Queue 参照成功] キュー登録済みのページ範囲を即座に適用: p.{pages_val} (見出し: {title_val})")
+            return pages_val
+    except Exception:
+        pass
+
+    if total_pages <= 40:
         return None
 
     # 1. まず PDF 内部の電子しおり（TOC）を走査
@@ -266,12 +280,12 @@ def resolve_chapter_pages_from_toc(
         except Exception as e:
             print(f"   ⚠️ PDFしおり走査エラー: {e}")
 
-    # 2. しおりが無い場合、先頭の目次ページ（p.4〜p.22）を Gemini に解析させてページ番号を特定
+    # 2. しおりが無い場合、先頭の目次ページ（p.2〜p.22）を Gemini に解析させてページ番号を特定
     try:
         from google.genai import types
         reader = PdfReader(pdf_path)
         toc_writer = PdfWriter()
-        start_toc = min(3, total_pages - 1)
+        start_toc = min(1, total_pages - 1)
         end_toc = min(22, total_pages)
         for i in range(start_toc, end_toc):
             toc_writer.add_page(reader.pages[i])

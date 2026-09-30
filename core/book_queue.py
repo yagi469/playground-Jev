@@ -51,6 +51,136 @@ def get_next_queue_task(queue_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def find_chapter_in_queue(
+    file_path: str,
+    pages: Optional[str] = None,
+    chapter: Optional[str] = None,
+    queue_path: str = DEFAULT_BOOK_QUEUE_PATH,
+    queue_data: Optional[Dict[str, Any]] = None,
+) -> Optional[tuple]:
+    """
+    指定されたファイルパス、ページ、または章ヒントに一致するキュー内の
+    (book_id, book, matched_chapter) を検索して返す。
+    """
+    if queue_data is None:
+        if not os.path.exists(queue_path):
+            return None
+        try:
+            queue_data = load_book_queue(queue_path)
+        except Exception:
+            return None
+
+    import re
+    norm_input = os.path.basename(file_path).strip().lower()
+
+    # 1. 書籍の照合
+    matched_book_id = None
+    matched_book = None
+
+    for book_id, book in queue_data.get("books", {}).items():
+        candidates = []
+        book_fp = book.get("file_path", "")
+        if book_fp:
+            candidates.append(os.path.basename(book_fp).strip().lower())
+        candidates.append(book_id.strip().lower())
+        if book.get("slug"):
+            candidates.append(book.get("slug", "").strip().lower())
+        if book.get("title"):
+            candidates.append(book.get("title", "").strip().lower())
+
+        for cand in candidates:
+            if cand and (cand == norm_input or cand in norm_input or norm_input in cand):
+                matched_book_id = book_id
+                matched_book = book
+                break
+
+        if not matched_book:
+            for ch in book.get("chapters", []):
+                ch_fp = ch.get("file_path", "")
+                if ch_fp and os.path.basename(ch_fp).strip().lower() == norm_input:
+                    matched_book_id = book_id
+                    matched_book = book
+                    break
+
+        if matched_book:
+            break
+
+    if not matched_book:
+        return None
+
+    chapters = matched_book.get("chapters", [])
+    matched_ch = None
+
+    # 2. 章の照合
+    # (A) pages 指定による照合
+    if pages:
+        norm_pages = pages.replace(" ", "")
+        for ch in chapters:
+            if ch.get("pages") and ch.get("pages").replace(" ", "") == norm_pages:
+                matched_ch = ch
+                break
+
+    # (B) chapter 指定による照合
+    if not matched_ch and chapter:
+        ch_str = chapter.strip().lower()
+
+        # B-1. タイトル一致
+        for ch in chapters:
+            ch_title = ch.get("title", "").strip().lower()
+            if ch_title and (ch_str in ch_title or ch_title in ch_str):
+                matched_ch = ch
+                break
+
+        # B-2. 章番号で照合（例: "第1章", "Chapter 2", "3", "0"）
+        if not matched_ch:
+            num_match = re.search(r'(?:chapter|ch|第)?\s*(\d+)', ch_str, re.IGNORECASE)
+            target_num = int(num_match.group(1)) if num_match else None
+
+            if target_num is not None:
+                for ch in chapters:
+                    if str(ch.get("chapter")) == str(target_num):
+                        matched_ch = ch
+                        break
+
+    # (C) 単一ファイル登録（チャプター個別 file_path）の照合
+    if not matched_ch:
+        for ch in chapters:
+            ch_fp = ch.get("file_path", "")
+            if ch_fp and os.path.basename(ch_fp).strip().lower() == norm_input:
+                matched_ch = ch
+                break
+
+    # (D) pages/chapter 指定がなく、章が1つだけの場合、または先頭の pending 章
+    if not matched_ch and not pages and not chapter:
+        pending_chapters = [c for c in chapters if c.get("status") == "pending"]
+        if len(chapters) == 1:
+            matched_ch = chapters[0]
+        elif pending_chapters:
+            matched_ch = pending_chapters[0]
+
+    if not matched_ch:
+        return None
+
+    return matched_book_id, matched_book, matched_ch
+
+
+def get_chapter_pages_from_queue(
+    file_path: str,
+    chapter: str,
+    queue_path: str = DEFAULT_BOOK_QUEUE_PATH,
+) -> Optional[tuple]:
+    """
+    キューから指定された章のページ範囲 (pages_str, chapter_title) を即座に取得する。
+    """
+    found = find_chapter_in_queue(file_path=file_path, chapter=chapter, queue_path=queue_path)
+    if found:
+        book_id, book, ch = found
+        pages = ch.get("pages")
+        if pages:
+            return pages, ch.get("title", "")
+    return None
+
+
 def sync_queue_on_file_published(
     file_path: str,
     created_post_file: str,
@@ -71,108 +201,20 @@ def sync_queue_on_file_published(
         print(f" ⚠️ [Book Queue Sync] キュー読込エラー: {e}")
         return None
 
-    import re
     from datetime import datetime
 
-    norm_input = os.path.basename(file_path).strip().lower()
+    found = find_chapter_in_queue(
+        file_path=file_path,
+        pages=pages,
+        chapter=chapter,
+        queue_path=queue_path,
+        queue_data=queue_data,
+    )
 
-    # 1. 書籍の照合
-    matched_book_id = None
-    matched_book = None
-
-    for book_id, book in queue_data.get("books", {}).items():
-        candidates = []
-        book_fp = book.get("file_path", "")
-        if book_fp:
-            candidates.append(os.path.basename(book_fp).strip().lower())
-        candidates.append(book_id.strip().lower())
-        if book.get("slug"):
-            candidates.append(book.get("slug", "").strip().lower())
-        if book.get("title"):
-            candidates.append(book.get("title", "").strip().lower())
-
-        # ファイル名が一致、あるいは候補に含まれるか
-        for cand in candidates:
-            if cand and (cand == norm_input or cand in norm_input or norm_input in cand):
-                matched_book_id = book_id
-                matched_book = book
-                break
-
-        # チャプター側に個別 file_path がある場合も照合
-        if not matched_book:
-            for ch in book.get("chapters", []):
-                ch_fp = ch.get("file_path", "")
-                if ch_fp and os.path.basename(ch_fp).strip().lower() == norm_input:
-                    matched_book_id = book_id
-                    matched_book = book
-                    break
-
-        if matched_book:
-            break
-
-    if not matched_book:
-        # キュー対象外の単発ドキュメント
+    if not found:
         return None
 
-    chapters = matched_book.get("chapters", [])
-    matched_ch = None
-
-    # 2. 章の照合
-    # (A) pages 指定による照合
-    if pages:
-        norm_pages = pages.replace(" ", "")
-        for ch in chapters:
-            if ch.get("pages") and ch.get("pages").replace(" ", "") == norm_pages:
-                matched_ch = ch
-                break
-
-    # (B) chapter 指定による照合
-    if not matched_ch and chapter:
-        ch_str = chapter.strip().lower()
-
-        # B-1. タイトル一致（渡された chapter 文字列がタイトルに含まれる、またはタイトルが含まれる）
-        for ch in chapters:
-            ch_title = ch.get("title", "").strip().lower()
-            if ch_title and (ch_str in ch_title or ch_title in ch_str):
-                matched_ch = ch
-                break
-
-        # B-2. タイトル一致がない場合、章番号で照合（例: "第1章", "Chapter 2", "3"）
-        if not matched_ch:
-            num_match = re.search(r'(?:chapter|ch|第)?\s*(\d+)', ch_str, re.IGNORECASE)
-            target_num = int(num_match.group(1)) if num_match else None
-
-            if target_num is not None:
-                for ch in chapters:
-                    if ch.get("chapter") == target_num:
-                        matched_ch = ch
-                        break
-
-    # (C) 単一ファイル登録（チャプター個別 file_path）の照合
-    if not matched_ch:
-        for ch in chapters:
-            ch_fp = ch.get("file_path", "")
-            if ch_fp and os.path.basename(ch_fp).strip().lower() == norm_input:
-                matched_ch = ch
-                break
-
-    # (D) pages/chapter 指定がなく、章が1つだけの場合、または先頭の pending 章
-    if not matched_ch and not pages and not chapter:
-        pending_chapters = [c for c in chapters if c.get("status") == "pending"]
-        if len(chapters) == 1:
-            matched_ch = chapters[0]
-        elif pending_chapters:
-            # ページや章が指定されていない場合、進行中の未完了章を1つ採用
-            matched_ch = pending_chapters[0]
-
-    if not matched_ch:
-        print(
-            f" ℹ️ [Book Queue Sync] 書籍 '{matched_book.get('title')}' はキューに登録されていますが、"
-            f"指定条件 (pages={pages}, chapter={chapter}) に合致する章が特定できなかったため、キュー更新をスキップしました。"
-        )
-        return None
-
-    # 3. キュー情報の更新と保存
+    matched_book_id, matched_book, matched_ch = found
     post_filename = os.path.basename(created_post_file)
     today_str = datetime.now().strftime("%Y-%m-%d")
 

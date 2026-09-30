@@ -28,6 +28,7 @@ from core.book_queue import (
     save_book_queue,
     get_next_queue_task,
     sync_queue_on_file_published,
+    get_chapter_pages_from_queue,
 )
 from core.post_formatter import (
     load_existing_posts_index,
@@ -76,6 +77,7 @@ __all__ = [
     "save_book_queue",
     "get_next_queue_task",
     "sync_queue_on_file_published",
+    "get_chapter_pages_from_queue",
     "load_existing_posts_index",
     "find_relevant_past_posts",
     "format_post_for_yagibrary",
