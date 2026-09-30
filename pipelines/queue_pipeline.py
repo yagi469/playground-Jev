@@ -64,14 +64,22 @@ def run_queue_pipeline(
     else:
         resolved_file = raw_file_path
 
-    # カスタムファイル名の決定（例: rich-dads-cashflow-quadrant-ch3.md）
+    # カスタムファイル名の決定（例: rich-dads-cashflow-quadrant-ch3.md, webapp-security-intro.md）
     custom_filename = None
-    if slug and ch_num:
-        custom_filename = f"{slug}-ch{ch_num}.md"
+    if slug and ch_num is not None:
+        ch_str = str(ch_num).lower()
+        if ch_str in ("0", "intro", "preface", "prologue"):
+            suffix = "intro" if ch_str in ("0", "intro") else ch_str
+            custom_filename = f"{slug}-{suffix}.md"
+        elif ch_str.isdigit():
+            custom_filename = f"{slug}-ch{ch_str}.md"
+        else:
+            custom_filename = f"{slug}-{ch_str}.md"
 
+    ch_label = ch_title if ch_title else (f"第{ch_num}章" if ch_num is not None else "対象章")
     print(f"\n📖 次の対象タスク:")
     print(f"   書籍: {book.get('title')} (ID: {book_id})")
-    print(f"   章: {ch_title} (第{ch_num}章)")
+    print(f"   章: {ch_label}")
     print(f"   ファイル: {resolved_file}")
     if pages:
         print(f"   ページ範囲: {pages}")
@@ -106,6 +114,6 @@ def run_queue_pipeline(
         queue_data["active_book_id"] = book_id
 
         save_book_queue(queue_data, queue_path)
-        print(f"\n✅ キューを正常に更新しました: {book_id} / 第{ch_num}章 -> published ({created_filename})")
+        print(f"\n✅ キューを正常に更新しました: {book_id} / {ch_label} -> published ({created_filename})")
 
     return out_files

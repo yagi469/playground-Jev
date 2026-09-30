@@ -183,9 +183,10 @@ def sync_queue_on_file_published(
 
     try:
         save_book_queue(queue_data, queue_path)
+        ch_label = matched_ch.get("title") or f"第{matched_ch.get('chapter')}章"
         print(
             f"\n✅ [Book Queue Sync] キューを自動更新しました: "
-            f"書籍 '{matched_book.get('title')}' / 第{matched_ch.get('chapter')}章 -> published ({post_filename})"
+            f"書籍 '{matched_book.get('title')}' / {ch_label} -> published ({post_filename})"
         )
         return {"book_id": matched_book_id, "chapter": matched_ch}
     except Exception as e:
