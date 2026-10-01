@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
-from config import DEFAULT_YAGIBRARY_POSTS_DIR
+from config import DEFAULT_YAGIBRARY_POSTS_DIR, JST
 from core.arxiv_client import fetch_arxiv_papers_by_ids, fetch_arxiv_paper_content
 from core.figure_extractor import fetch_arxiv_paper_figures
 from core.post_formatter import (
@@ -58,7 +58,7 @@ def run_targeted_pipeline(
     posts_index = load_existing_posts_index(target_dir)
 
     os.makedirs(target_dir, exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(JST).strftime("%Y-%m-%d")
     generated_files = []
 
     for i, paper in enumerate(ranked_papers):

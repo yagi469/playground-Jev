@@ -6,8 +6,9 @@ core/book_queue.py
 
 import os
 import json
+from datetime import datetime
 from typing import Dict, Any, Optional
-from config import DEFAULT_BOOK_QUEUE_PATH
+from config import DEFAULT_BOOK_QUEUE_PATH, JST
 
 
 def load_book_queue(queue_path: str = DEFAULT_BOOK_QUEUE_PATH) -> Dict[str, Any]:
@@ -27,16 +28,10 @@ def save_book_queue(queue_data: Dict[str, Any], queue_path: str = DEFAULT_BOOK_Q
 
 
 def get_next_queue_task(queue_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """次に執筆・投稿すべき未公開章（pending）を探索して返す"""
+    """次に執筆・投稿すべき未公開章（pending）を探索して返す（queue_order の優先順）"""
     order = queue_data.get("queue_order", [])
-    active_id = queue_data.get("active_book_id")
-    if active_id and active_id in order:
-        idx = order.index(active_id)
-        search_order = order[idx:] + order[:idx]
-    else:
-        search_order = order
 
-    for book_id in search_order:
+    for book_id in order:
         book = queue_data.get("books", {}).get(book_id)
         if not book:
             continue
@@ -201,8 +196,6 @@ def sync_queue_on_file_published(
         print(f" ⚠️ [Book Queue Sync] キュー読込エラー: {e}")
         return None
 
-    from datetime import datetime
-
     found = find_chapter_in_queue(
         file_path=file_path,
         pages=pages,
@@ -216,12 +209,11 @@ def sync_queue_on_file_published(
 
     matched_book_id, matched_book, matched_ch = found
     post_filename = os.path.basename(created_post_file)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(JST).strftime("%Y-%m-%d")
 
     matched_ch["status"] = "published"
     matched_ch["post_file"] = post_filename
     matched_ch["published_at"] = today_str
-    queue_data["active_book_id"] = matched_book_id
 
     try:
         save_book_queue(queue_data, queue_path)

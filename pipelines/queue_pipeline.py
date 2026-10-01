@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+from config import JST
 from core.book_queue import (
     DEFAULT_BOOK_QUEUE_PATH,
     load_book_queue,
@@ -105,13 +106,12 @@ def run_queue_pipeline(
     if out_files:
         created_file = out_files[0]
         created_filename = os.path.basename(created_file)
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(JST).strftime("%Y-%m-%d")
 
         # キュー更新
         chapter["status"] = "published"
         chapter["post_file"] = created_filename
         chapter["published_at"] = today_str
-        queue_data["active_book_id"] = book_id
 
         save_book_queue(queue_data, queue_path)
         print(f"\n✅ キューを正常に更新しました: {book_id} / {ch_label} -> published ({created_filename})")

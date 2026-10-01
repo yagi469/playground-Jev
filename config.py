@@ -5,8 +5,12 @@ config.py
 """
 
 import os
+from datetime import timezone, timedelta
 from dotenv import load_dotenv
 from typesafe_sdk import TypeSafeClient
+
+# 日本標準時 (JST)
+JST = timezone(timedelta(hours=9))
 
 # 環境変数の読み込み
 load_dotenv(".env.local")

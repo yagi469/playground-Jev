@@ -105,7 +105,7 @@ jobs:
           git status
           if [ -n "$(git status --porcelain src/content/posts docs/book_queue.json)" ]; then
             git add src/content/posts docs/book_queue.json
-            TODAY=$(date +'%Y-%m-%d')
+            TODAY=$(TZ='Asia/Tokyo' date +'%Y-%m-%d')
             git commit -m "post: auto-generate blog article for ${TODAY}"
             git pull --rebase origin master
             git push origin master
