@@ -36,6 +36,11 @@ on:
         required: false
         default: '3'
         type: string
+      force:
+        description: '本日の記事が既に存在する場合でも強制実行する'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -55,18 +60,46 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           path: yagibrary
 
+      - name: Check if today's post already exists
+        id: check_post
+        run: |
+          # 手動でファイル指定や論文指定がある場合、または force=true の場合はスキップしない
+          if [ -n "${{ github.event.inputs.file_path }}" ] || [ -n "${{ github.event.inputs.arxiv_id }}" ] || [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "Manual or targeted execution requested -> will run pipeline."
+            echo "skip=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          TODAY=$(TZ='Asia/Tokyo' date +'%Y-%m-%d')
+          echo "Checking for articles generated today (${TODAY})..."
+
+          # yagibrary のフロントマターの日付を検出
+          POST_COUNT=$(grep -l "date:.*${TODAY}" yagibrary/src/content/posts/*.md 2>/dev/null | wc -l || echo 0)
+
+          if [ "$POST_COUNT" -gt 0 ]; then
+            echo "✅ 本日の記事（${TODAY}）は既に生成されています（${POST_COUNT}件検出）。"
+            echo "Antigravity ローカルクォータで生成済みのため、Gemini API 呼び出しをスキップします（課金ゼロ）。"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ 本日の記事は見つかりませんでした。GitHub Actions によるバックアップ生成を実行します。"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Setup Python
+        if: steps.check_post.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.check_post.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Daily Paper Blogger Pipeline
+        if: steps.check_post.outputs.skip != 'true'
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -98,6 +131,7 @@ jobs:
           fi
 
       - name: Commit and push changes to yagibrary
+        if: steps.check_post.outputs.skip != 'true'
         working-directory: yagibrary
         run: |
           git config user.name "github-actions[bot]"
