@@ -25,6 +25,17 @@
 - ローカル環境で実行時は `google-antigravity` SDK を最優先し、API キー不要・クォータ枠でブログ記事の推敲・リライトを実行。
 - GitHub Actions 等の CI 環境（SDK 非導入環境）では、渡された `GEMINI_API_KEY` を用いて既存の Google GenAI API で動作します。
 
+### D. CI/CD連携（EventBridge × GitHub Actions スマートフォールバック）
+- [`playground-Jev/.github/workflows/daily_blogger.yml`](file:///c:/Users/user/Dev/playground-Jev/.github/workflows/daily_blogger.yml):
+  - **自動スキップ判定ステップの追加**:
+    - AWS EventBridge から定期的に `workflow_dispatch` がキックされた際、まず「日本時間の今日の記事が既に生成されているか」をフロントマターの日付からチェック。
+    - **ローカル（Antigravity）で生成済みの場合**:
+      `✅ 本日の記事は既に生成されています。スキップします。` と判定し、Python のセットアップや Gemini API の呼び出しを一切行わずに即座に正常終了（**課金ゼロ**）。
+    - **未生成（PCが起動していなかった、またはエラー時）**:
+      自動的にフォールバックとして GitHub Actions 側で記事生成パイプラインを完遂（**安全なバックアップ**）。
+  - **手動実行フラグのサポート**:
+    - 手動でファイル指定・論文指定がある場合や、`force=true` パラメータを指定した場合は、スキップ判定をバイパスして強制実行可能。
+
 ---
 
 ## 3. 動作検証結果
